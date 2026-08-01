@@ -1,6 +1,6 @@
 # Local WiFi Debug Sync
 
-This project is a native Android (Kotlin) application designed for Google/Android TV devices. It autonomously enables Wireless Debugging, discovers the assigned random port, and reports it to a Home Assistant webhook.
+This project is a native Android (Kotlin) application designed for Google/Android TV devices. It autonomously enables Wireless Debugging, discovers the assigned random port, and reports it to a Home Assistant webhook — **headlessly**, primarily on device boot. See [Architecture](#architecture-headless-port-sync).
 
 ## Core Mandates
 - **No Autonomous Sync:** Do NOT sync, push, or commit changes to GitHub unless specifically instructed by the user in the current turn.
@@ -14,15 +14,24 @@ Enable a "one-click" synchronization of the Android Wireless Debugging port to H
 - **App Name:** Local WiFi Debug Sync
 - **Package ID:** `com.enuff.localwifidebug`
 - **Main Activity:** `.MainActivity`
-- **Webhook Endpoint:** Defined in `local.properties` as `WEBHOOK_URL`.
-- **Device ID Reported:** `ccwgt`
+- **Webhook Endpoint / Device ID:** compiled into `BuildConfig` from `WEBHOOK_URL` / `DEVICE_ID` in `local.properties` (CI defaults: webhook id `<webhook-id>`, `device_id` `<device-id>`). Build-time constants, not runtime config.
 
-## Key Features
-- **Auto-Run on Launch:** The app immediately checks the status and sends the port upon launch.
-- **Already-Enabled Logic:** If Wireless Debugging is already on, it skips the setup and just syncs the current port.
-- **mDNS Discovery:** Uses `NsdManager` to listen for the `_adb-tls-connect._tcp.` service.
-- **Visual Feedback:** Shows system notifications and Toast messages on the TV upon success/failure.
-- **Auto-Exit:** The app closes itself (calls `finish()`) after a successful report to minimize UI intrusion.
+## Architecture (headless port sync)
+The sync runs **headlessly** — no UI, no screen takeover. Two triggers feed one code path:
+- **On boot (primary):** `BootReceiver` (`RECEIVE_BOOT_COMPLETED`) enqueues the sync. Wireless Debugging is off after a reboot and returns on a new random port, so the device **proactively pushes** the fresh port to HA rather than waiting to be launched.
+- **Manual / recovery:** `MainActivity` is an invisible launcher — plain `Activity` with `Theme.Invisible` (`windowNoDisplay`; `noHistory` + `excludeFromRecents` + empty `taskAffinity`, no window animation). It shows no window, enqueues the same worker, and `finish()`es in `onCreate`. HA's `remote.turn_on ... activity` (via the Android-TV **Remote** integration — independent of ADB) and `adb monkey LAUNCHER` both hit this; launching also clears Android's "stopped state" so `BOOT_COMPLETED` will fire.
+
+Both enqueue **`SyncWorker`** (WorkManager, **expedited**): enable WD (`WRITE_SECURE_SETTINGS`) → `NetworkType.CONNECTED` constraint → mDNS discover `_adb-tls-connect._tcp.` (8s timeout) → **single** POST to the HA webhook.
+- **Retry boundary:** "done" = webhook **HTTP 2xx only**. The worker has zero visibility into whether the add-on then reconnects over ADB, so it never retries on downstream state. Bounded to 3 attempts to deliver one POST past transient failures; no port discovered → **no POST invented** (the HA add-on's own ~60s mDNS watch is the backstop).
+- **Feedback:** notifications only — **no toasts**. A high-importance `WRITE_SECURE_SETTINGS` self-check fires a notification with the exact `pm grant` command if the grant is missing (that grant does **not** survive a signature-changed reinstall and can't be UI-granted). On Android TV notifications may not render visibly; the real success signal is the webhook POST / logcat tags `WiFiDebugWorker`, `WiFiDebugActivity`. The OS's own "wireless debugging enabled" toast appears only when a recovery actually re-enables WD — unsuppressable and expected.
+- **Expedited work** runs as a JobScheduler job on the API-34 target (no `foregroundServiceType` landmine); `getForegroundInfo` + `FOREGROUND_SERVICE` exist only as the API<31 fallback. `BootReceiver` stamps enqueue time; the worker logs enqueue→run latency + attempt so silent expedited-quota degradation is observable.
+
+### Two-part system (coordinate before changing the contract)
+This app is **one half** of a system. A separate **HA/add-on** side (an "ADB Keeper" add-on) consumes the webhook, connects over ADB, runs `adb tcpip 5555`, and reloads the `androidtv` integration. The **contract is fixed**: `POST {HA}/api/webhook/<id>` with body `{ "port": <int>, "device_id": "<string>" }`. HA reads only `port`, but `device_id` must keep being sent (future multi-TV branching). Do **not** change the webhook id / port / URL / payload / add auth without coordinating the HA side in lockstep.
+
+### Deferred (non-blocking)
+- **Expedited-quota stress test** — parked (user doesn't rapid-reboot; `BOOT_COMPLETED` is a protected broadcast, so ADB can't fake reboots). If ever needed: add a DEBUG-only exported receiver (e.g. action `com.enuff.localwifidebug.DEBUG_ENQUEUE`) that enqueues the same worker, to fire rapidly over ADB and watch for the silent deferred-fallback.
+- **Plex refresh-switch hitch** — not yet exercised under 24fps/48Hz DV playback; watch during normal use.
 
 ## Installation & Deployment (via ADB)
 
@@ -42,13 +51,23 @@ adb install /opt/usb/steven/projects/localwifidebug/app/build/outputs/apk/debug/
 ```
 
 ### 3. Critical Permissions (Manual Grant Required)
-Run these commands once after installation to allow the app to function:
+`WRITE_SECURE_SETTINGS` must be granted over ADB (it cannot be UI-granted):
 ```bash
 # Allow toggling system settings (Wireless Debugging)
 adb shell pm grant com.enuff.localwifidebug android.permission.WRITE_SECURE_SETTINGS
 
 # Allow showing notifications on Android 13+
 adb shell pm grant com.enuff.localwifidebug android.permission.POST_NOTIFICATIONS
+```
+
+**Grant persistence:** thanks to the stable committed keystore, an **in-place update** (`adb install -r`, same signature) **keeps all grants** — no re-grant needed. Only a **signature change** (e.g. the historical throwaway-key builds → the stable key) forces uninstall + reinstall, which silently drops `WRITE_SECURE_SETTINGS`. The worker's self-check will surface that with a `pm grant` notification. Full one-time-per-device migration on a signature change:
+```bash
+adb uninstall com.enuff.localwifidebug
+adb install app-release.apk
+adb shell pm grant com.enuff.localwifidebug android.permission.WRITE_SECURE_SETTINGS
+adb shell pm grant com.enuff.localwifidebug android.permission.POST_NOTIFICATIONS
+# Clear Android's "stopped state" so BOOT_COMPLETED will fire:
+adb shell monkey -p com.enuff.localwifidebug -c android.intent.category.LAUNCHER 1
 ```
 
 ## CI / Build Pipeline

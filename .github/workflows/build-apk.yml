@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+    # Docs-only changes don't affect the APK, so they shouldn't cut a release.
+    paths-ignore:
+      - '**.md'
+      - 'flowchart.*'
+      - 'LICENSE'
   workflow_dispatch:
     inputs:
       webhook_id:
