@@ -8,4 +8,15 @@
         <item name="colorOnSecondary">@color/black</item>
         <item name="android:statusBarColor" tools:targetApi="l">?attr/colorPrimaryVariant</item>
     </style>
+
+    <!-- Phase b: MainActivity is a headless launcher that finishes in onCreate.
+         windowNoDisplay = the window is never shown at all (no frame, no launch
+         animation), so the manual/recovery launch doesn't take over the TV screen.
+         Requires the Activity to finish() before it would become visible. -->
+    <style name="Theme.Invisible" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowNoDisplay">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

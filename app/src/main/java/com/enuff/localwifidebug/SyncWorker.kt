@@ -3,6 +3,7 @@ package com.enuff.localwifidebug
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
@@ -35,8 +36,9 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
- * Headless equivalent of the Activity's auto-run: enable Wireless Debugging,
- * discover the assigned mDNS port, and POST it once to the HA webhook.
+ * Headless equivalent of the old Activity auto-run: enable Wireless Debugging,
+ * discover the assigned mDNS port, and POST it once to the HA webhook. Shared by
+ * both triggers — BootReceiver (on boot) and MainActivity (manual/recovery).
  *
  * Retry boundary (agreed with the HA/add-on side):
  *  - The worker's ONLY success signal is the webhook's HTTP 2xx. It has zero
@@ -57,17 +59,36 @@ class SyncWorker(
         val enqueueTs = inputData.getLong(KEY_ENQUEUE_TS, -1L)
         val latencyMs = if (enqueueTs > 0) System.currentTimeMillis() - enqueueTs else -1L
         // enqueue->run latency + attempt make silent expedited-quota degradation
-        // observable: a large latency on attempt 1 means the job ran deferred.
+        // observable: a large latency on attempt 0 means the job ran deferred.
         Log.d(TAG, "start: enqueue->run=${latencyMs}ms attempt=$runAttemptCount")
 
-        createNotificationChannel()
+        createNotificationChannels()
+
+        // Loud self-check: WRITE_SECURE_SETTINGS does NOT survive a
+        // signature-changed reinstall and cannot be UI-granted, so a missing
+        // grant would otherwise leave the app silently inert. Surface the exact
+        // fix instead of failing quietly.
+        if (!hasWriteSecureSettings()) {
+            Log.e(TAG, "WRITE_SECURE_SETTINGS NOT granted — app is inert until granted")
+            showNotification(
+                "⚠️ WiFi Debug: permission missing",
+                "Run: adb shell pm grant $PACKAGE android.permission.WRITE_SECURE_SETTINGS",
+                ERROR_CHANNEL_ID,
+            )
+            return Result.failure()
+        }
 
         try {
             enableWifiDebuggingIfNeeded()
         } catch (e: SecurityException) {
-            Log.e(TAG, "WRITE_SECURE_SETTINGS not granted", e)
-            showNotification("WiFi Debug Error", "Grant WRITE_SECURE_SETTINGS via ADB.")
-            return Result.failure() // no point retrying without the permission
+            // Defensive: permission could be revoked between the check and use.
+            Log.e(TAG, "WRITE_SECURE_SETTINGS revoked mid-run", e)
+            showNotification(
+                "⚠️ WiFi Debug: permission missing",
+                "Run: adb shell pm grant $PACKAGE android.permission.WRITE_SECURE_SETTINGS",
+                ERROR_CHANNEL_ID,
+            )
+            return Result.failure()
         }
 
         val port = discoverPort(DISCOVERY_TIMEOUT_MS)
@@ -89,7 +110,7 @@ class SyncWorker(
             if (runAttemptCount + 1 < MAX_ATTEMPTS) {
                 Result.retry()
             } else {
-                showNotification("WiFi Debug Error", "Failed to POST port $port.")
+                showNotification("WiFi Debug Error", "Failed to POST port $port.", ERROR_CHANNEL_ID)
                 Result.failure()
             }
         }
@@ -97,7 +118,7 @@ class SyncWorker(
 
     /** Required so expedited work does not crash on API < 31 (FGS fallback path). */
     override suspend fun getForegroundInfo(): ForegroundInfo {
-        createNotificationChannel()
+        createNotificationChannels()
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("WiFi Debug Sync")
@@ -107,6 +128,11 @@ class SyncWorker(
             .build()
         return ForegroundInfo(ONGOING_NOTIF_ID, notification)
     }
+
+    private fun hasWriteSecureSettings(): Boolean =
+        applicationContext.checkSelfPermission(
+            android.Manifest.permission.WRITE_SECURE_SETTINGS,
+        ) == PackageManager.PERMISSION_GRANTED
 
     private suspend fun enableWifiDebuggingIfNeeded() {
         val resolver = applicationContext.contentResolver
@@ -192,26 +218,37 @@ class SyncWorker(
         }
     }
 
-    private fun createNotificationChannel() {
+    private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "WiFi Debug Status",
-                NotificationManager.IMPORTANCE_DEFAULT,
-            ).apply { description = "Notifications for WiFi Debug port reporting" }
-            notificationManager().createNotificationChannel(channel)
+            val nm = notificationManager()
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    "WiFi Debug Status",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ).apply { description = "Port reporting status" },
+            )
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    ERROR_CHANNEL_ID,
+                    "WiFi Debug Errors",
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply { description = "Setup/permission problems that need attention" },
+            )
         }
     }
 
-    private fun showNotification(title: String, message: String) {
-        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+    private fun showNotification(title: String, message: String, channelId: String = CHANNEL_ID) {
+        val isError = channelId == ERROR_CHANNEL_ID
+        val notification = NotificationCompat.Builder(applicationContext, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(message)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message)) // show the full command
+            .setPriority(if (isError) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
             .build()
-        notificationManager().notify(RESULT_NOTIF_ID, notification)
+        notificationManager().notify(if (isError) ERROR_NOTIF_ID else RESULT_NOTIF_ID, notification)
     }
 
     private fun notificationManager() =
@@ -220,11 +257,14 @@ class SyncWorker(
     companion object {
         private const val TAG = "WiFiDebugWorker"
         private const val UNIQUE_NAME = "wifi_debug_sync"
+        private const val PACKAGE = "com.enuff.localwifidebug"
         const val KEY_ENQUEUE_TS = "enqueue_ts"
 
         private const val SERVICE_TYPE = "_adb-tls-connect._tcp."
         private const val CHANNEL_ID = "wifi_debug_status"
+        private const val ERROR_CHANNEL_ID = "wifi_debug_errors"
         private const val RESULT_NOTIF_ID = 1
+        private const val ERROR_NOTIF_ID = 2
         private const val ONGOING_NOTIF_ID = 42
 
         private const val MAX_ATTEMPTS = 3
