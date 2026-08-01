@@ -1,0 +1,259 @@
+package com.enuff.localwifidebug
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
+import android.os.Build
+import android.provider.Settings
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.ForegroundInfo
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
+import androidx.work.WorkManager
+import androidx.work.WorkRequest
+import androidx.work.WorkerParameters
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+
+/**
+ * Headless equivalent of the Activity's auto-run: enable Wireless Debugging,
+ * discover the assigned mDNS port, and POST it once to the HA webhook.
+ *
+ * Retry boundary (agreed with the HA/add-on side):
+ *  - The worker's ONLY success signal is the webhook's HTTP 2xx. It has zero
+ *    visibility into whether the add-on subsequently connects over ADB, so it
+ *    cannot and does not retry on downstream recovery. "Done" = the port was
+ *    delivered to HA, never "ADB recovered".
+ *  - Retries exist only to deliver ONE POST past transient conditions
+ *    (network up via constraint, WD slow to advertise, webhook briefly
+ *    unreachable), bounded to [MAX_ATTEMPTS]. No port discovered -> no POST is
+ *    invented; the add-on's own mDNS watch is the backstop.
+ */
+class SyncWorker(
+    appContext: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(appContext, params) {
+
+    override suspend fun doWork(): Result {
+        val enqueueTs = inputData.getLong(KEY_ENQUEUE_TS, -1L)
+        val latencyMs = if (enqueueTs > 0) System.currentTimeMillis() - enqueueTs else -1L
+        // enqueue->run latency + attempt make silent expedited-quota degradation
+        // observable: a large latency on attempt 1 means the job ran deferred.
+        Log.d(TAG, "start: enqueue->run=${latencyMs}ms attempt=$runAttemptCount")
+
+        createNotificationChannel()
+
+        try {
+            enableWifiDebuggingIfNeeded()
+        } catch (e: SecurityException) {
+            Log.e(TAG, "WRITE_SECURE_SETTINGS not granted", e)
+            showNotification("WiFi Debug Error", "Grant WRITE_SECURE_SETTINGS via ADB.")
+            return Result.failure() // no point retrying without the permission
+        }
+
+        val port = discoverPort(DISCOVERY_TIMEOUT_MS)
+        if (port == null) {
+            Log.w(TAG, "No $SERVICE_TYPE port discovered (attempt $runAttemptCount)")
+            return if (runAttemptCount + 1 < MAX_ATTEMPTS) {
+                Result.retry() // WD may still be spinning up
+            } else {
+                showNotification("WiFi Debug", "Port not found; HA mDNS watch is the backstop.")
+                Result.failure()
+            }
+        }
+
+        return if (postToHa(port)) {
+            Log.d(TAG, "posted port=$port (latency ${latencyMs}ms)")
+            showNotification("WiFi Debug Sync", "Port $port sent.")
+            Result.success()
+        } else {
+            if (runAttemptCount + 1 < MAX_ATTEMPTS) {
+                Result.retry()
+            } else {
+                showNotification("WiFi Debug Error", "Failed to POST port $port.")
+                Result.failure()
+            }
+        }
+    }
+
+    /** Required so expedited work does not crash on API < 31 (FGS fallback path). */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        createNotificationChannel()
+        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("WiFi Debug Sync")
+            .setContentText("Reporting debug port…")
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .build()
+        return ForegroundInfo(ONGOING_NOTIF_ID, notification)
+    }
+
+    private suspend fun enableWifiDebuggingIfNeeded() {
+        val resolver = applicationContext.contentResolver
+        val alreadyOn = Settings.Global.getInt(resolver, "adb_wifi_enabled", 0) == 1
+        if (!alreadyOn) {
+            Log.d(TAG, "Enabling Wireless Debugging")
+            Settings.Global.putInt(resolver, "adb_wifi_enabled", 1)
+            delay(ENABLE_SETTLE_MS) // let the service come up and start advertising
+        } else {
+            Log.d(TAG, "Wireless Debugging already enabled")
+        }
+    }
+
+    private suspend fun discoverPort(timeoutMs: Long): Int? = withTimeoutOrNull(timeoutMs) {
+        suspendCancellableCoroutine<Int> { cont ->
+            val nsd = applicationContext.getSystemService(Context.NSD_SERVICE) as NsdManager
+            var done = false
+            var listener: NsdManager.DiscoveryListener? = null
+
+            fun stopDiscovery() {
+                listener?.let {
+                    try {
+                        nsd.stopServiceDiscovery(it)
+                    } catch (_: Exception) {
+                    }
+                }
+                listener = null
+            }
+
+            listener = object : NsdManager.DiscoveryListener {
+                override fun onDiscoveryStarted(regType: String) {}
+
+                override fun onServiceFound(service: NsdServiceInfo) {
+                    if (!service.serviceType.contains("adb-tls-connect")) return
+                    nsd.resolveService(service, object : NsdManager.ResolveListener {
+                        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                            Log.e(TAG, "Resolve failed: $errorCode")
+                        }
+
+                        override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+                            if (done) return
+                            done = true
+                            val port = serviceInfo.port
+                            stopDiscovery()
+                            if (cont.isActive) cont.resume(port)
+                        }
+                    })
+                }
+
+                override fun onServiceLost(service: NsdServiceInfo) {}
+                override fun onDiscoveryStopped(serviceType: String) {}
+                override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                    Log.e(TAG, "Discovery start failed: $errorCode")
+                    if (cont.isActive) cont.cancel()
+                }
+                override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
+            }
+
+            nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+            cont.invokeOnCancellation { stopDiscovery() }
+        }
+    }
+
+    private suspend fun postToHa(port: Int): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().apply {
+                put("port", port)
+                put("device_id", BuildConfig.DEVICE_ID)
+            }.toString().toRequestBody("application/json".toMediaType())
+
+            val request = Request.Builder()
+                .url(BuildConfig.WEBHOOK_URL)
+                .post(body)
+                .build()
+
+            OkHttpClient().newCall(request).execute().use { response ->
+                Log.d(TAG, "HA response: ${response.code}")
+                response.isSuccessful
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "POST to HA failed", e)
+            false
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "WiFi Debug Status",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply { description = "Notifications for WiFi Debug port reporting" }
+            notificationManager().createNotificationChannel(channel)
+        }
+    }
+
+    private fun showNotification(title: String, message: String) {
+        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .build()
+        notificationManager().notify(RESULT_NOTIF_ID, notification)
+    }
+
+    private fun notificationManager() =
+        applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+    companion object {
+        private const val TAG = "WiFiDebugWorker"
+        private const val UNIQUE_NAME = "wifi_debug_sync"
+        const val KEY_ENQUEUE_TS = "enqueue_ts"
+
+        private const val SERVICE_TYPE = "_adb-tls-connect._tcp."
+        private const val CHANNEL_ID = "wifi_debug_status"
+        private const val RESULT_NOTIF_ID = 1
+        private const val ONGOING_NOTIF_ID = 42
+
+        private const val MAX_ATTEMPTS = 3
+        private const val ENABLE_SETTLE_MS = 3000L
+        private const val DISCOVERY_TIMEOUT_MS = 8000L
+
+        /** Enqueue the sync, stamping the enqueue time for latency observability. */
+        fun enqueue(context: Context) {
+            val input = Data.Builder()
+                .putLong(KEY_ENQUEUE_TS, System.currentTimeMillis())
+                .build()
+
+            val request = OneTimeWorkRequestBuilder<SyncWorker>()
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build(),
+                )
+                .setInputData(input)
+                .setBackoffCriteria(
+                    BackoffPolicy.LINEAR,
+                    WorkRequest.MIN_BACKOFF_MILLIS,
+                    TimeUnit.MILLISECONDS,
+                )
+                .build()
+
+            WorkManager.getInstance(context)
+                .enqueueUniqueWork(UNIQUE_NAME, ExistingWorkPolicy.REPLACE, request)
+        }
+    }
+}
