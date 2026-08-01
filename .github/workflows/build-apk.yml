@@ -45,15 +45,9 @@ jobs:
           NAME=$(grep '^APP_VERSION_NAME=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Generate signing keystore
-        run: |
-          keytool -genkeypair -v \
-            -keystore app/release.keystore \
-            -storetype PKCS12 \
-            -alias localwifidebug \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass <keystore-password> -keypass <keystore-password> \
-            -dname "CN=Local WiFi Debug, OU=Home, O=Home, L=Berlin, S=Berlin, C=DE"
+      # Signing key is committed at app/release.keystore (stable signature so app
+      # updates install in-place and keep ADB-granted permissions). No per-build
+      # keystore generation.
 
       - name: Write local.properties
         run: |
