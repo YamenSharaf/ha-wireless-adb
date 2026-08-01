@@ -1,5 +1,7 @@
 # Local WiFi Debug Sync
 
+Upstream Repo: https://github.com/stevene1919/localwifidebug
+
 **Local WiFi Debug Sync** is a specialized Android application (Kotlin) designed to automate the synchronization of the **Wireless Debugging** port on Android TV devices (like Chromecast with Google TV) with **Home Assistant**.
 
 ## Why this exists
