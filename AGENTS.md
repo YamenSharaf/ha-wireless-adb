@@ -5,7 +5,7 @@ This project is a native Android (Kotlin) application designed for Google/Androi
 ## Core Mandates
 - **No Autonomous Sync:** Do NOT sync, push, or commit changes to GitHub unless specifically instructed by the user in the current turn.
 - **No Autonomous Builds:** Do NOT run build commands (e.g., `./gradlew assembleDebug`, `gradle build`) unless specifically instructed by the user in the current turn.
-- **Security & Secrets:** NEVER upload or commit secure information (keystores, passwords, API tokens, webhooks, or private keys) to GitHub. All sensitive credentials must remain in local, ignored files.
+- **Security & Secrets:** NEVER upload or commit real secrets (API tokens, private keys, production passwords) to GitHub; keep them in local, ignored files. **Deliberate exception (private repo):** the release signing keystore `app/release.keystore` (throwaway password `<keystore-password>`) and the HA webhook/device defaults live in the repo/workflow on purpose so CI can build and sign — see [CI / Build Pipeline](#ci--build-pipeline). Do not "fix" this by removing them.
 
 ## Objective
 Enable a "one-click" synchronization of the Android Wireless Debugging port to Home Assistant, allowing the HA Android TV integration (ADB) to reconnect without manual intervention when the port changes.
@@ -50,6 +50,14 @@ adb shell pm grant com.enuff.localwifidebug android.permission.WRITE_SECURE_SETT
 # Allow showing notifications on Android 13+
 adb shell pm grant com.enuff.localwifidebug android.permission.POST_NOTIFICATIONS
 ```
+
+## CI / Build Pipeline
+GitHub Actions (`.github/workflows/build-apk.yml`) builds and releases the APK. Key decisions:
+- **Triggers:** push to `main`, plus manual `workflow_dispatch`. Push builds use the hardcoded default webhook/HA-URL/device inputs (`<webhook-id>` / `<ha-host>:8123` / `<device-id>`); manual runs can override them. These get compiled into `BuildConfig` at build time.
+- **No `gradlew`:** the repo ships only the wrapper jar, so CI invokes it directly (`java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain assembleRelease`).
+- **Versioning (hybrid):** `versionCode` is driven automatically by the Actions run number (CI passes `-PAPP_VERSION_CODE=${run_number}`) so every build is a strictly-increasing, installable upgrade. `versionName` is bumped intentionally by a human via `scripts/bump.sh [patch|minor|major]`.
+- **Releases:** each build publishes a GitHub Release tagged `v<versionName>-<run#>` with the signed APK attached (built-in `gh` CLI; needs `permissions: contents: write`).
+- **Stable committed keystore:** `app/release.keystore` is committed (not generated per build) so every APK shares one signature. This is what makes in-place updates work — and therefore lets the ADB-granted `WRITE_SECURE_SETTINGS` **persist across updates instead of being wiped on every reinstall**. If the signing key ever changes, devices need a one-time uninstall + reinstall + re-grant.
 
 ## Home Assistant Integration
 
