@@ -17,6 +17,11 @@ import android.util.Log
  * The LAUNCHER + LEANBACK_LAUNCHER intent filters are kept so HA's existing
  * launch and ADB `monkey` continue to work unchanged, and so launching also
  * pulls the app out of Android's "stopped state" (re-arming BOOT_COMPLETED).
+ *
+ * A third entry point, the app link `localwifidebug://launch`, reaches the same
+ * onCreate. HA should launch with that link: a bare package name becomes
+ * `market://launch?id=...`, which stopped resolving on the Bravia after the
+ * Play Store update of ~2026-10-20.
  */
 class MainActivity : Activity() {
 

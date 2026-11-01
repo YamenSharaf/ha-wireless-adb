@@ -45,6 +45,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+            <!-- App-link entry point: localwifidebug://launch. HA's Android TV
+                 Remote integration sends a bare package name as
+                 market://launch?id=<pkg>, which needs the Play Store to resolve
+                 it; since the Play Store update of ~2026-10-20 nothing on the
+                 Bravia handles market:// and the relaunch silently failed. A URL
+                 with its own scheme is passed through untouched and resolves
+                 straight to this activity. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="localwifidebug" android:host="launch" />
+            </intent-filter>
         </activity>
 
         <!-- Fires the headless port sync on boot (phase a). -->

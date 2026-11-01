@@ -19,7 +19,7 @@ Enable a "one-click" synchronization of the Android Wireless Debugging port to H
 ## Architecture (headless port sync)
 The sync runs **headlessly** — no UI, no screen takeover. Two triggers feed one code path:
 - **On boot (primary):** `BootReceiver` (`RECEIVE_BOOT_COMPLETED`) enqueues the sync. Wireless Debugging is off after a reboot and returns on a new random port, so the device **proactively pushes** the fresh port to HA rather than waiting to be launched.
-- **Manual / recovery:** `MainActivity` is an invisible launcher — plain `Activity` with `Theme.Invisible` (`windowNoDisplay`; `noHistory` + `excludeFromRecents` + empty `taskAffinity`, no window animation). It shows no window, enqueues the same worker, and `finish()`es in `onCreate`. HA's `remote.turn_on ... activity` (via the Android-TV **Remote** integration — independent of ADB) and `adb monkey LAUNCHER` both hit this; launching also clears Android's "stopped state" so `BOOT_COMPLETED` will fire.
+- **Manual / recovery:** `MainActivity` is an invisible launcher — plain `Activity` with `Theme.Invisible` (`windowNoDisplay`; `noHistory` + `excludeFromRecents` + empty `taskAffinity`, no window animation). It shows no window, enqueues the same worker, and `finish()`es in `onCreate`. HA's `remote.turn_on` with `activity: localwifidebug://launch` (via the Android-TV **Remote** integration — independent of ADB) and `adb monkey LAUNCHER` both hit this. Use the app link, not the bare package name: the Remote integration turns a package name into `market://launch?id=<pkg>`, and since the Play Store update of ~2026-10-20 nothing on the Bravia resolves `market://`, so those launches fail silently (logcat: `AtvRemote.AppLinkFeature: Failed to launch app link`); launching also clears Android's "stopped state" so `BOOT_COMPLETED` will fire.
 
 Both enqueue **`SyncWorker`** (WorkManager, **expedited**): enable WD (`WRITE_SECURE_SETTINGS`) → `NetworkType.CONNECTED` constraint → mDNS discover `_adb-tls-connect._tcp.` (8s timeout) → **single** POST to the HA webhook.
 - **Retry boundary:** "done" = webhook **HTTP 2xx only**. The worker has zero visibility into whether the add-on then reconnects over ADB, so it never retries on downstream state. Bounded to 3 attempts to deliver one POST past transient failures; no port discovered → **no POST invented** (the HA add-on's own ~60s mDNS watch is the backstop).
@@ -27,7 +27,7 @@ Both enqueue **`SyncWorker`** (WorkManager, **expedited**): enable WD (`WRITE_SE
 - **Expedited work** runs as a JobScheduler job on the API-34 target (no `foregroundServiceType` landmine); `getForegroundInfo` + `FOREGROUND_SERVICE` exist only as the API<31 fallback. `BootReceiver` stamps enqueue time; the worker logs enqueue→run latency + attempt so silent expedited-quota degradation is observable.
 
 ### Two-part system (coordinate before changing the contract)
-This app is **one half** of a system. A separate **HA/add-on** side (an "ADB Keeper" add-on) consumes the webhook, connects over ADB, runs `adb tcpip 5555`, and reloads the `androidtv` integration. The **contract is fixed**: `POST {HA}/api/webhook/<id>` with body `{ "port": <int>, "device_id": "<string>" }`. HA reads only `port`, but `device_id` must keep being sent (future multi-TV branching). Do **not** change the webhook id / port / URL / payload / add auth without coordinating the HA side in lockstep.
+This app is **one half** of a system. A separate **HA/add-on** side (an "ADB Keeper" add-on) consumes the webhook, connects over ADB, runs `adb tcpip <classic_port>` (5556 since 2026-11-01: Sony's webapi can grab 5555 at boot), and reloads the `androidtv` integration. The **contract is fixed**: `POST {HA}/api/webhook/<id>` with body `{ "port": <int>, "device_id": "<string>" }`. HA reads only `port`, but `device_id` must keep being sent (future multi-TV branching). Do **not** change the webhook id / port / URL / payload / add auth without coordinating the HA side in lockstep.
 
 ### Deferred (non-blocking)
 - **Expedited-quota stress test** — parked (user doesn't rapid-reboot; `BOOT_COMPLETED` is a protected broadcast, so ADB can't fake reboots). If ever needed: add a DEBUG-only exported receiver (e.g. action `com.enuff.localwifidebug.DEBUG_ENQUEUE`) that enqueues the same worker, to fire rapidly over ADB and watch for the silent deferred-fallback.
@@ -91,7 +91,7 @@ local_wifi_debug_sync:
       target:
         entity_id: remote.steven_tv
       data:
-        activity: "com.enuff.localwifidebug"
+        activity: "localwifidebug://launch"   # not the package name: market:// links no longer resolve
   mode: single
   icon: mdi:wifi-sync
 ```
