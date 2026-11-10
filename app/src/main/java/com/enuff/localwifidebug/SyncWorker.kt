@@ -32,6 +32,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.net.InetAddress
+import java.net.NetworkInterface
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
@@ -146,9 +148,37 @@ class SyncWorker(
         }
     }
 
-    private suspend fun discoverPort(timeoutMs: Long): Int? = withTimeoutOrNull(timeoutMs) {
-        suspendCancellableCoroutine<Int> { cont ->
+    /**
+     * Find THIS device's own `_adb-tls-connect` port.
+     *
+     * mDNS discovery returns every device on the LAN with Wireless Debugging on
+     * (phones, tablets, other TVs), not just this one. The first version took the
+     * first service that resolved, and on 2026-11-09 and -10 it reported another Android device's
+     * port to HA after the 03:01 standby restart. A resolved service only counts
+     * if one of its addresses is one of this device's own interface addresses.
+     *
+     * Resolves run one at a time from a queue: older NsdManager stacks reject a
+     * second concurrent resolve (FAILURE_ALREADY_ACTIVE), which could otherwise
+     * drop our own service when several devices are found in quick succession.
+     */
+    private suspend fun discoverPort(timeoutMs: Long): Int? {
+        val ownAddresses = localAddresses()
+        if (ownAddresses.isEmpty()) {
+            // Without our own addresses we can't tell our service from anyone
+            // else's. Report nothing rather than a guess; the add-on's mDNS
+            // watch is the backstop.
+            Log.w(TAG, "Could not enumerate own interface addresses; skipping discovery")
+            return null
+        }
+        return withTimeoutOrNull(timeoutMs) { discoverOwnPort(ownAddresses) }
+    }
+
+    private suspend fun discoverOwnPort(ownAddresses: Set<List<Byte>>): Int =
+        suspendCancellableCoroutine { cont ->
             val nsd = applicationContext.getSystemService(Context.NSD_SERVICE) as NsdManager
+            val lock = Any()
+            val pending = ArrayDeque<NsdServiceInfo>()
+            var resolving = false
             var done = false
             var listener: NsdManager.DiscoveryListener? = null
 
@@ -162,24 +192,56 @@ class SyncWorker(
                 listener = null
             }
 
+            fun resolveNext() {
+                val next = synchronized(lock) {
+                    if (done || resolving) return
+                    pending.removeFirstOrNull()?.also { resolving = true }
+                } ?: return
+
+                nsd.resolveService(next, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                        Log.e(TAG, "Resolve failed for ${serviceInfo.serviceName}: $errorCode")
+                        synchronized(lock) { resolving = false }
+                        resolveNext()
+                    }
+
+                    override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+                        val addresses = resolvedAddresses(serviceInfo)
+                        val isOwn = addresses.any { it.address.toList() in ownAddresses }
+                        val claimed = synchronized(lock) {
+                            resolving = false
+                            if (isOwn && !done) {
+                                done = true
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        if (claimed) {
+                            Log.d(TAG, "Own service ${serviceInfo.serviceName} on port ${serviceInfo.port}")
+                            stopDiscovery()
+                            if (cont.isActive) cont.resume(serviceInfo.port)
+                        } else {
+                            if (!isOwn) {
+                                Log.d(
+                                    TAG,
+                                    "Skipping ${serviceInfo.serviceName} at " +
+                                        "${addresses.map { it.hostAddress }}:${serviceInfo.port} - not this device",
+                                )
+                            }
+                            resolveNext()
+                        }
+                    }
+                })
+            }
+
             listener = object : NsdManager.DiscoveryListener {
                 override fun onDiscoveryStarted(regType: String) {}
 
                 override fun onServiceFound(service: NsdServiceInfo) {
                     if (!service.serviceType.contains("adb-tls-connect")) return
-                    nsd.resolveService(service, object : NsdManager.ResolveListener {
-                        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                            Log.e(TAG, "Resolve failed: $errorCode")
-                        }
-
-                        override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                            if (done) return
-                            done = true
-                            val port = serviceInfo.port
-                            stopDiscovery()
-                            if (cont.isActive) cont.resume(port)
-                        }
-                    })
+                    synchronized(lock) { pending.addLast(service) }
+                    resolveNext()
                 }
 
                 override fun onServiceLost(service: NsdServiceInfo) {}
@@ -194,7 +256,25 @@ class SyncWorker(
             nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
             cont.invokeOnCancellation { stopDiscovery() }
         }
+
+    /** Raw address bytes of every interface address on this device (scope-free, so IPv6 compares cleanly). */
+    private fun localAddresses(): Set<List<Byte>> = try {
+        NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+            .flatMap { it.inetAddresses.toList() }
+            .filterNot { it.isLoopbackAddress }
+            .map { it.address.toList() }
+            .toSet()
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to enumerate network interfaces", e)
+        emptySet()
     }
+
+    private fun resolvedAddresses(info: NsdServiceInfo): List<InetAddress> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            info.hostAddresses.ifEmpty { listOfNotNull(@Suppress("DEPRECATION") info.host) }
+        } else {
+            listOfNotNull(@Suppress("DEPRECATION") info.host)
+        }
 
     private suspend fun postToHa(port: Int): Boolean = withContext(Dispatchers.IO) {
         try {
