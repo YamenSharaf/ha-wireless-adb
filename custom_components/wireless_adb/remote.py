@@ -1,10 +1,10 @@
-"""Support for the AndroidTV remote."""
+"""Remote for Android TV devices over wireless debugging."""
 
 from collections.abc import Iterable
 import logging
 from typing import Any, override
 
-from androidtv.constants import KEYS
+from androidtv_wifi.constants import KEYS
 
 from homeassistant.components.remote import ATTR_NUM_REPEATS, RemoteEntity
 from homeassistant.config_entries import ConfigEntry
@@ -13,7 +13,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import CONF_TURN_OFF_COMMAND, CONF_TURN_ON_COMMAND, DOMAIN
-from .entity import AndroidTVEntity, adb_decorator
+from .entity import WirelessAdbEntity, adb_decorator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,12 +23,12 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the AndroidTV remote from a config entry."""
+    """Set up the remote from a config entry."""
     async_add_entities([AndroidTVRemote(entry)])
 
 
-class AndroidTVRemote(AndroidTVEntity, RemoteEntity):
-    """Device that sends commands to a AndroidTV."""
+class AndroidTVRemote(WirelessAdbEntity, RemoteEntity):
+    """Device that sends commands to an Android TV."""
 
     _attr_name = None
     _attr_should_poll = False

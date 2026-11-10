@@ -1,9 +1,9 @@
-# Describes the format for available Android and Fire TV services
+# Services for Android TV devices over wireless debugging
 
 adb_command:
   target:
     entity:
-      integration: androidtv
+      integration: wireless_adb
       domain: media_player
   fields:
     command:
@@ -14,7 +14,7 @@ adb_command:
 download:
   target:
     entity:
-      integration: androidtv
+      integration: wireless_adb
       domain: media_player
   fields:
     device_path:
@@ -30,7 +30,7 @@ download:
 upload:
   target:
     entity:
-      integration: androidtv
+      integration: wireless_adb
       domain: media_player
   fields:
     device_path:
@@ -46,5 +46,5 @@ upload:
 learn_sendevent:
   target:
     entity:
-      integration: androidtv
+      integration: wireless_adb
       domain: media_player

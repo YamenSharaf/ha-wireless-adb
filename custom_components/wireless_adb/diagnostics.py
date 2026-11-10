@@ -1,4 +1,4 @@
-"""Diagnostics support for AndroidTV."""
+"""Diagnostics support for Wireless ADB."""
 
 from typing import Any
 
@@ -7,32 +7,37 @@ from homeassistant.components.diagnostics import (
     device_entry_as_dict,
     entity_entry_as_dict,
 )
-from homeassistant.const import ATTR_CONNECTIONS, ATTR_IDENTIFIERS, CONF_UNIQUE_ID
+from homeassistant.const import (
+    ATTR_CONNECTIONS,
+    ATTR_IDENTIFIERS,
+    CONF_HOST,
+    CONF_UNIQUE_ID,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from . import AndroidTVConfigEntry
+from . import WirelessAdbConfigEntry
 from .const import DOMAIN, PROP_ETHMAC, PROP_SERIALNO, PROP_WIFIMAC
 
-TO_REDACT = {CONF_UNIQUE_ID}  # UniqueID contain MAC Address
+TO_REDACT = {CONF_UNIQUE_ID, CONF_HOST, "title"}  # unique ID is the serial
 TO_REDACT_DEV = {ATTR_CONNECTIONS, ATTR_IDENTIFIERS}
 TO_REDACT_DEV_PROP = {PROP_ETHMAC, PROP_SERIALNO, PROP_WIFIMAC}
 
 
 async def async_get_config_entry_diagnostics(
-    hass: HomeAssistant, entry: AndroidTVConfigEntry
+    hass: HomeAssistant, entry: WirelessAdbConfigEntry
 ) -> dict[str, dict[str, Any]]:
     """Return diagnostics for a config entry."""
     data = {"entry": async_redact_data(entry.as_dict(), TO_REDACT)}
 
-    # Get information from AndroidTV library
+    # Get information from the androidtv library
     aftv = entry.runtime_data.aftv
     data["device_properties"] = {
         **async_redact_data(aftv.device_properties, TO_REDACT_DEV_PROP),
         "device_class": aftv.DEVICE_CLASS,
     }
 
-    # Gather information how this AndroidTV device is represented in Home Assistant
+    # Gather information how this device is represented in Home Assistant
     device_registry = dr.async_get(hass)
     entity_registry = er.async_get(hass)
     hass_device = device_registry.async_get_device_by_identifier(

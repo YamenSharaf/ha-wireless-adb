@@ -1,27 +1,20 @@
-"""Base AndroidTV Entity."""
+"""Base Wireless ADB entity."""
 
 from collections.abc import Awaitable, Callable, Coroutine
 import functools
 import logging
 from typing import Any, Concatenate
 
-from androidtv.exceptions import LockNotAcquiredException
+from androidtv_wifi.exceptions import LockNotAcquiredException
 
-from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
 from homeassistant.helpers.entity import Entity
 
-from . import (
-    ADB_PYTHON_EXCEPTIONS,
-    ADB_TCP_EXCEPTIONS,
-    AndroidTVConfigEntry,
-    get_androidtv_mac,
-)
-from .const import DEVICE_ANDROIDTV, DOMAIN
+from . import ADB_PYTHON_EXCEPTIONS, WirelessAdbConfigEntry, get_androidtv_mac
+from .const import DOMAIN
 
 PREFIX_ANDROIDTV = "Android TV"
-PREFIX_FIRETV = "Fire TV"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,7 +24,7 @@ type _ReturnFuncType[_T, **_P, _R] = Callable[
 ]
 
 
-def adb_decorator[_ADBDeviceT: AndroidTVEntity, **_P, _R](
+def adb_decorator[_ADBDeviceT: WirelessAdbEntity, **_P, _R](
     override_available: bool = False,
 ) -> Callable[[_FuncType[_ADBDeviceT, _P, _R]], _ReturnFuncType[_ADBDeviceT, _P, _R]]:
     """Wrap ADB methods and catch exceptions.
@@ -101,30 +94,23 @@ def adb_decorator[_ADBDeviceT: AndroidTVEntity, **_P, _R](
     return _adb_decorator
 
 
-class AndroidTVEntity(Entity):
-    """Defines a base AndroidTV entity."""
+class WirelessAdbEntity(Entity):
+    """Defines a base Wireless ADB entity."""
 
     _attr_has_entity_name = True
 
-    def __init__(self, entry: AndroidTVConfigEntry) -> None:
-        """Initialize the AndroidTV base entity."""
+    def __init__(self, entry: WirelessAdbConfigEntry) -> None:
+        """Initialize the Wireless ADB base entity."""
         self.aftv = entry.runtime_data.aftv
+        self._entry = entry
         self._attr_unique_id = entry.unique_id
         self._entry_runtime_data = entry.runtime_data
 
-        device_class = self.aftv.DEVICE_CLASS
-        device_type = (
-            PREFIX_ANDROIDTV if device_class == DEVICE_ANDROIDTV else PREFIX_FIRETV
-        )
-        # CONF_NAME may be present in entry.data for configuration imported from YAML
-        device_name = entry.data.get(
-            CONF_NAME, f"{device_type} {entry.data[CONF_HOST]}"
-        )
         info = self.aftv.device_properties
         model = info.get("model")
         self._attr_device_info = DeviceInfo(
-            model=f"{model} ({device_type})" if model else device_type,
-            name=device_name,
+            model=f"{model} ({PREFIX_ANDROIDTV})" if model else PREFIX_ANDROIDTV,
+            name=entry.title,
         )
         if self.unique_id:
             self._attr_device_info.identifiers = {(DOMAIN, self.unique_id)}
@@ -133,12 +119,9 @@ class AndroidTVEntity(Entity):
         if sw_version := info.get("sw_version"):
             self._attr_device_info.sw_version = sw_version
         if mac := get_androidtv_mac(info):
+            # Same MAC as the androidtv / androidtv_remote / braviatv devices,
+            # so Home Assistant shows all of them on one device.
             self._attr_device_info.connections = {(CONNECTION_NETWORK_MAC, mac)}
 
         # ADB exceptions to catch
-        if not self.aftv.adb_server_ip:
-            # Using "adb_shell" (Python ADB implementation)
-            self.exceptions = ADB_PYTHON_EXCEPTIONS
-        else:
-            # Communicate via ADB server
-            self.exceptions = ADB_TCP_EXCEPTIONS
+        self.exceptions = ADB_PYTHON_EXCEPTIONS

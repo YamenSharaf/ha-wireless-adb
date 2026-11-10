@@ -1,12 +1,12 @@
-"""Support for functionality to interact with Android / Fire TV devices."""
+"""Media player for Android TV devices over wireless debugging."""
 
 from datetime import datetime, timedelta
 import hashlib
 import logging
 from typing import override
 
-from androidtv.constants import APPS, KEYS
-from androidtv.setup_async import AndroidTVAsync, FireTVAsync
+from androidtv_wifi.constants import APPS, KEYS
+from androidtv_wifi.setup_async import AndroidTVAsync
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.media_player import (
@@ -20,7 +20,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util.dt import utcnow
 
-from . import AndroidTVConfigEntry
+from . import WirelessAdbConfigEntry, async_refresh_endpoint
 from .const import (
     CONF_APPS,
     CONF_EXCLUDE_UNNAMED_APPS,
@@ -31,13 +31,16 @@ from .const import (
     DEFAULT_EXCLUDE_UNNAMED_APPS,
     DEFAULT_GET_SOURCES,
     DEFAULT_SCREENCAP_INTERVAL,
-    DEVICE_ANDROIDTV,
     SIGNAL_CONFIG_ENTITY,
 )
-from .entity import AndroidTVEntity, adb_decorator
+from .entity import WirelessAdbEntity, adb_decorator
 from .services import ATTR_ADB_RESPONSE, ATTR_HDMI_INPUT
 
 _LOGGER = logging.getLogger(__name__)
+
+# While disconnected, look the device up over mDNS on the 1st, 7th, 13th...
+# failed connect (polling runs every 10 s, so about once a minute).
+ENDPOINT_REFRESH_EVERY = 6
 
 # Translate from `AndroidTV` / `FireTV` reported state to HA state.
 ANDROIDTV_STATES = {
@@ -51,27 +54,20 @@ ANDROIDTV_STATES = {
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: AndroidTVConfigEntry,
+    entry: WirelessAdbConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the Android Debug Bridge entity."""
-    device_class = entry.runtime_data.aftv.DEVICE_CLASS
-    async_add_entities(
-        [
-            AndroidTVDevice(entry)
-            if device_class == DEVICE_ANDROIDTV
-            else FireTVDevice(entry)
-        ]
-    )
+    """Set up the media player entity."""
+    async_add_entities([AndroidTVDevice(entry)])
 
 
-class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
+class ADBDevice(WirelessAdbEntity, MediaPlayerEntity):
     """Representation of an Android or Fire TV device."""
 
     _attr_device_class = MediaPlayerDeviceClass.TV
     _attr_name = None
 
-    def __init__(self, entry: AndroidTVConfigEntry) -> None:
+    def __init__(self, entry: WirelessAdbConfigEntry) -> None:
         """Initialize the Android / Fire TV device."""
         super().__init__(entry)
         self._entry_id = entry.entry_id
@@ -287,7 +283,7 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
             persistent_notification.async_create(
                 self.hass,
                 msg,
-                title="Android Debug Bridge",
+                title="Wireless ADB",
             )
             _LOGGER.debug("%s", msg)
 
@@ -339,6 +335,14 @@ class AndroidTVDevice(ADBDevice):
                 self._attr_available = True
             else:
                 self._failed_connect_count += 1
+                if self._failed_connect_count % ENDPOINT_REFRESH_EVERY == 1:
+                    # The port rotates when adbd restarts. Zeroconf discovery
+                    # usually catches that; this is the fallback. A changed
+                    # endpoint reloads the entry (see update_listener).
+                    self.hass.async_create_background_task(
+                        async_refresh_endpoint(self.hass, self._entry),
+                        f"wireless_adb refresh endpoint {self._entry.entry_id}",
+                    )
 
         # If the ADB connection is not intact, don't update.
         if not self.available:
@@ -409,70 +413,3 @@ class AndroidTVDevice(ADBDevice):
     async def async_volume_up(self) -> None:
         """Send volume up command."""
         self._attr_volume_level = await self.aftv.volume_up(self._attr_volume_level)
-
-
-class FireTVDevice(ADBDevice):
-    """Representation of a Fire TV device."""
-
-    _attr_supported_features = (
-        MediaPlayerEntityFeature.PAUSE
-        | MediaPlayerEntityFeature.PLAY
-        | MediaPlayerEntityFeature.TURN_ON
-        | MediaPlayerEntityFeature.TURN_OFF
-        | MediaPlayerEntityFeature.PREVIOUS_TRACK
-        | MediaPlayerEntityFeature.NEXT_TRACK
-        | MediaPlayerEntityFeature.SELECT_SOURCE
-        | MediaPlayerEntityFeature.STOP
-    )
-    aftv: FireTVAsync
-
-    @adb_decorator(override_available=True)
-    async def async_update(self) -> None:
-        """Update the device state and, if necessary, re-connect."""
-        # Check if device is disconnected.
-        if not self._attr_available:
-            # Try to connect
-            if await self.aftv.adb_connect(log_errors=self._failed_connect_count == 0):
-                self._failed_connect_count = 0
-                self._attr_available = True
-            else:
-                self._failed_connect_count += 1
-
-        # If the ADB connection is not intact, don't update.
-        if not self.available:
-            return
-
-        prev_app_id = self._attr_app_id
-        # Get the `state`, `current_app`, `running_apps` and `hdmi_input`.
-        (
-            state,
-            self._attr_app_id,
-            running_apps,
-            self._attr_extra_state_attributes[ATTR_HDMI_INPUT],
-        ) = await self.aftv.update(self._get_sources)
-
-        self._attr_state = ANDROIDTV_STATES.get(state)
-        if self._attr_state is None:
-            self._attr_available = False
-
-        if running_apps and self._attr_app_id:
-            self._attr_source = self._app_id_to_name.get(
-                self._attr_app_id, self._attr_app_id
-            )
-            sources = [
-                self._app_id_to_name.get(
-                    app_id, app_id if not self._exclude_unnamed_apps else None
-                )
-                for app_id in running_apps
-            ]
-            self._attr_source_list = [source for source in sources if source]
-        else:
-            self._attr_source_list = None
-
-        await self._async_get_screencap(prev_app_id)
-
-    @adb_decorator()
-    @override
-    async def async_media_stop(self) -> None:
-        """Send stop (back) command."""
-        await self.aftv.back()

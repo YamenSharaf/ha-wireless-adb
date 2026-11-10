@@ -1,56 +1,43 @@
-"""Support for functionality to interact with Android/Fire TV devices."""
+"""Wireless ADB: Android TV over wireless debugging (TLS).
 
-from collections.abc import Mapping
+Forked from Home Assistant's core `androidtv` integration (2026.11.0). The
+media player and remote are kept close to upstream; the connection layer
+(connection.py, discovery.py) replaces classic ADB with wireless debugging:
+pairing codes, TLS sessions and an mDNS-advertised port that rotates.
+"""
+
 from dataclasses import dataclass
 import logging
-import os
 from typing import Any
 
-from adb_shell.auth.keygen import keygen
-from adb_shell.exceptions import (
+from adb_shell_wifi.exceptions import (
     AdbTimeoutError,
     InvalidChecksumError,
     InvalidCommandError,
     InvalidResponseError,
     TcpTimeoutException,
 )
-from androidtv.adb_manager.adb_manager_sync import ADBPythonSync, PythonRSASigner
-from androidtv.setup_async import (
-    AndroidTVAsync,
-    FireTVAsync,
-    setup as async_androidtv_setup,
-)
+from androidtv_wifi.setup_async import AndroidTVAsync
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    CONF_DEVICE_CLASS,
-    CONF_HOST,
-    CONF_PORT,
-    EVENT_HOMEASSISTANT_STOP,
-    Platform,
-)
+from homeassistant.const import CONF_HOST, CONF_PORT, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.storage import STORAGE_DIR
 from homeassistant.helpers.typing import ConfigType
 
+from .connection import async_connect, default_adbkey_path
 from .const import (
-    CONF_ADB_SERVER_IP,
-    CONF_ADB_SERVER_PORT,
     CONF_ADBKEY,
-    CONF_SCREENCAP_INTERVAL,
     CONF_STATE_DETECTION_RULES,
-    DEFAULT_ADB_SERVER_PORT,
-    DEVICE_ANDROIDTV,
-    DEVICE_FIRETV,
     DOMAIN,
     PROP_ETHMAC,
     PROP_WIFIMAC,
     SIGNAL_CONFIG_ENTITY,
 )
+from .discovery import async_find_connect_endpoint
 from .services import async_setup_services
 
 ADB_PYTHON_EXCEPTIONS: tuple = (
@@ -62,8 +49,8 @@ ADB_PYTHON_EXCEPTIONS: tuple = (
     InvalidCommandError,
     InvalidResponseError,
     TcpTimeoutException,
+    OSError,
 )
-ADB_TCP_EXCEPTIONS: tuple = (ConnectionResetError, RuntimeError)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -76,14 +63,14 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
-class AndroidTVRuntimeData:
+class WirelessAdbRuntimeData:
     """Runtime data definition."""
 
-    aftv: AndroidTVAsync | FireTVAsync
+    aftv: AndroidTVAsync
     dev_opt: dict[str, Any]
 
 
-AndroidTVConfigEntry = ConfigEntry[AndroidTVRuntimeData]
+WirelessAdbConfigEntry = ConfigEntry[WirelessAdbRuntimeData]
 
 
 def get_androidtv_mac(dev_props: dict[str, Any]) -> str | None:
@@ -96,127 +83,76 @@ def get_androidtv_mac(dev_props: dict[str, Any]) -> str | None:
     return None
 
 
-def _setup_androidtv(
-    hass: HomeAssistant, config: Mapping[str, Any]
-) -> tuple[str, PythonRSASigner | None, str]:
-    """Generate an ADB key (if needed) and load it."""
-    adbkey: str = config.get(
-        CONF_ADBKEY, hass.config.path(STORAGE_DIR, "androidtv_adbkey")
+def entry_adbkey(hass: HomeAssistant, entry: ConfigEntry) -> str:
+    """Return the ADB key path used by a config entry."""
+    return entry.data.get(CONF_ADBKEY) or default_adbkey_path(hass)
+
+
+async def async_refresh_endpoint(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Look the device up over mDNS and store a changed host/port.
+
+    Returns True if the stored endpoint changed. The caller decides whether
+    to reload.
+    """
+    if entry.unique_id is None:
+        return False
+    found = await async_find_connect_endpoint(hass, serial=entry.unique_id)
+    if found is None:
+        return False
+    host, port = found
+    if (host, port) == (entry.data[CONF_HOST], entry.data[CONF_PORT]):
+        return False
+    _LOGGER.info(
+        "%s moved from %s:%s to %s:%s",
+        entry.title,
+        entry.data[CONF_HOST],
+        entry.data[CONF_PORT],
+        host,
+        port,
     )
-    if CONF_ADB_SERVER_IP not in config:
-        # Use "adb_shell" (Python ADB implementation)
-        if not os.path.isfile(adbkey):
-            # Generate ADB key files
-            keygen(adbkey)
-
-        # Load the ADB key
-        signer = ADBPythonSync.load_adbkey(adbkey)
-        adb_log = f"using Python ADB implementation with adbkey='{adbkey}'"
-
-    else:
-        # Communicate via ADB server
-        signer = None
-        adb_log = (
-            "using ADB server at"
-            f" {config[CONF_ADB_SERVER_IP]}:{config[CONF_ADB_SERVER_PORT]}"
-        )
-
-    return adbkey, signer, adb_log
-
-
-async def async_connect_androidtv(
-    hass: HomeAssistant,
-    config: Mapping[str, Any],
-    *,
-    state_detection_rules: dict[str, Any] | None = None,
-    timeout: float = 30.0,
-) -> tuple[AndroidTVAsync | FireTVAsync | None, str | None]:
-    """Connect to Android device."""
-    address = f"{config[CONF_HOST]}:{config[CONF_PORT]}"
-
-    adbkey, signer, adb_log = await hass.async_add_executor_job(
-        _setup_androidtv, hass, config
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_HOST: host, CONF_PORT: port}
     )
-
-    aftv = await async_androidtv_setup(
-        host=config[CONF_HOST],
-        port=config[CONF_PORT],
-        adbkey=adbkey,
-        adb_server_ip=config.get(CONF_ADB_SERVER_IP),
-        adb_server_port=config.get(CONF_ADB_SERVER_PORT, DEFAULT_ADB_SERVER_PORT),
-        state_detection_rules=state_detection_rules,
-        device_class=config[CONF_DEVICE_CLASS],
-        auth_timeout_s=timeout,
-        signer=signer,
-        log_errors=False,
-    )
-
-    if not aftv.available:
-        # Determine the name that will be used for the device in the log
-        if config[CONF_DEVICE_CLASS] == DEVICE_ANDROIDTV:
-            device_name = "Android device"
-        elif config[CONF_DEVICE_CLASS] == DEVICE_FIRETV:
-            device_name = "Fire TV device"
-        else:
-            device_name = "Android / Fire TV device"
-
-        error_message = f"Could not connect to {device_name} at {address} {adb_log}"
-        return None, error_message
-
-    return aftv, None
-
-
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Migrate old entry."""
-    _LOGGER.debug(
-        "Migrating configuration from version %s.%s", entry.version, entry.minor_version
-    )
-
-    if entry.version == 1:
-        new_options = {**entry.options}
-
-        # Migrate MinorVersion 1 -> MinorVersion 2: New option
-        if entry.minor_version < 2:
-            new_options = {**new_options, CONF_SCREENCAP_INTERVAL: 0}
-
-            hass.config_entries.async_update_entry(
-                entry, options=new_options, minor_version=2, version=1
-            )
-
-    _LOGGER.debug(
-        "Migration to configuration version %s.%s successful",
-        entry.version,
-        entry.minor_version,
-    )
+    return True
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the Android TV / Fire TV integration."""
+    """Set up the Wireless ADB integration."""
     async_setup_services(hass)
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: AndroidTVConfigEntry) -> None:
-    """Set up Android Debug Bridge platform."""
-
+async def async_setup_entry(hass: HomeAssistant, entry: WirelessAdbConfigEntry) -> bool:
+    """Set up a device from a config entry."""
     state_det_rules = entry.options.get(CONF_STATE_DETECTION_RULES)
-    if CONF_ADB_SERVER_IP not in entry.data:
-        exceptions = ADB_PYTHON_EXCEPTIONS
-    else:
-        exceptions = ADB_TCP_EXCEPTIONS
+    adbkey = entry_adbkey(hass, entry)
 
-    try:
-        aftv, error_message = await async_connect_androidtv(
-            hass, entry.data, state_detection_rules=state_det_rules
+    async def _connect() -> AndroidTVAsync:
+        try:
+            return await async_connect(
+                hass,
+                entry.data[CONF_HOST],
+                entry.data[CONF_PORT],
+                adbkey,
+                state_detection_rules=state_det_rules,
+            )
+        except ADB_PYTHON_EXCEPTIONS as exc:
+            raise ConfigEntryNotReady(exc) from exc
+
+    aftv = await _connect()
+    if not aftv.available and await async_refresh_endpoint(hass, entry):
+        # The stored port was stale (reboot, adbd restart); try the new one.
+        aftv = await _connect()
+
+    if not aftv.available:
+        raise ConfigEntryNotReady(
+            f"Could not open a wireless debugging session with"
+            f" {entry.data[CONF_HOST]}:{entry.data[CONF_PORT]}. Is wireless"
+            " debugging on, and is this Home Assistant still paired?"
         )
-    except exceptions as exc:
-        raise ConfigEntryNotReady(exc) from exc
-
-    if not aftv:
-        raise ConfigEntryNotReady(error_message)
 
     async def async_close_connection(event: Event) -> None:
-        """Close Android Debug Bridge connection on HA Stop."""
+        """Close the ADB connection on HA stop."""
         await aftv.adb_close()
 
     entry.async_on_unload(
@@ -224,20 +160,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: AndroidTVConfigEntry) ->
     )
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
-    entry.runtime_data = AndroidTVRuntimeData(aftv, entry.options.copy())
+    entry.runtime_data = WirelessAdbRuntimeData(aftv, entry.options.copy())
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: AndroidTVConfigEntry) -> None:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: WirelessAdbConfigEntry
+) -> bool:
     """Unload a config entry."""
-    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        await entry.runtime_data.aftv.adb_close()
+    return unload_ok
+
+
+async def update_listener(hass: HomeAssistant, entry: WirelessAdbConfigEntry) -> None:
+    """Handle config entry updates."""
+    # A changed endpoint (from mDNS) needs a fresh connection.
     aftv = entry.runtime_data.aftv
-    await aftv.adb_close()
+    if (aftv.host, aftv.port) != (entry.data[CONF_HOST], entry.data[CONF_PORT]):
+        hass.config_entries.async_schedule_reload(entry.entry_id)
+        return
 
-
-async def update_listener(hass: HomeAssistant, entry: AndroidTVConfigEntry) -> None:
-    """Update when config_entry options update."""
     reload_opt = False
     old_options = entry.runtime_data.dev_opt
     for opt_key, opt_val in entry.options.items():
