@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.enuff.localwifidebug">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Only exercised by WorkManager's expedited-work fallback on API < 31.
+         On the API 34 target, expedited work runs as a JobScheduler job (no FGS). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:banner="@drawable/banner"
+        android:label="Local WiFi Debug Sync"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.AppCompat.Light.DarkActionBar"
+        tools:targetApi="31">
+        <!-- Headless launcher (phase b): invisible window, finishes in onCreate,
+             enqueues the same SyncWorker as the boot path. noHistory +
+             excludeFromRecents + empty taskAffinity keep it out of the task
+             stack / recents so it leaves no trace on the TV. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Invisible"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:finishOnTaskLaunch="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+            <!-- App-link entry point: localwifidebug://launch. HA's Android TV
+                 Remote integration sends a bare package name as
+                 market://launch?id=<pkg>, which needs the Play Store to resolve
+                 it; since the Play Store update of ~2026-10-20 nothing on the
+                 Bravia handles market:// and the relaunch silently failed. A URL
+                 with its own scheme is passed through untouched and resolves
+                 straight to this activity. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="localwifidebug" android:host="launch" />
+            </intent-filter>
+        </activity>
+
+        <!-- Fires the headless port sync on boot (phase a). -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

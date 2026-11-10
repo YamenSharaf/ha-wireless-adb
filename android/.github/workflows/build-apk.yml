@@ -1,0 +1,94 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - main
+    # Docs-only changes don't affect the APK, so they shouldn't cut a release.
+    paths-ignore:
+      - '**.md'
+      - 'flowchart.*'
+      - 'LICENSE'
+  workflow_dispatch:
+    inputs:
+      webhook_id:
+        description: "HA webhook ID (the part after /api/webhook/)"
+        required: true
+        default: "<webhook-id>"
+      ha_url:
+        description: "Home Assistant base URL"
+        required: true
+        default: "http://<ha-host>:8123"
+      device_id:
+        description: "Identifier sent to HA (free text)"
+        required: true
+        default: "<device-id>"
+
+# Needed so the workflow can create a GitHub Release
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Push events have no inputs, so fall back to the same defaults as workflow_dispatch
+    env:
+      WEBHOOK_ID: ${{ github.event.inputs.webhook_id || '<webhook-id>' }}
+      HA_URL: ${{ github.event.inputs.ha_url || 'http://<ha-host>:8123' }}
+      DEVICE_ID: ${{ github.event.inputs.device_id || '<device-id>' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Read app version
+        id: ver
+        run: |
+          NAME=$(grep '^APP_VERSION_NAME=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      # Signing key is committed at app/release.keystore (stable signature so app
+      # updates install in-place and keep ADB-granted permissions). No per-build
+      # keystore generation.
+
+      - name: Write local.properties
+        run: |
+          cat > local.properties <<PROPS
+          WEBHOOK_URL=${HA_URL}/api/webhook/${WEBHOOK_ID}
+          DEVICE_ID=${DEVICE_ID}
+          RELEASE_STORE_PASSWORD=<keystore-password>
+          RELEASE_KEY_PASSWORD=<keystore-password>
+          RELEASE_KEY_ALIAS=localwifidebug
+          PROPS
+          echo "--- local.properties (webhook shown for verification) ---"
+          grep WEBHOOK_URL local.properties
+
+      - name: Build release APK
+        run: |
+          # repo has no gradlew script, only the wrapper jar - invoke it directly.
+          # versionCode is driven by the Actions run number so every build is a
+          # strictly-increasing, installable upgrade (versionName stays as set in
+          # gradle.properties via scripts/bump.sh).
+          java -cp gradle/wrapper/gradle-wrapper.jar \
+            org.gradle.wrapper.GradleWrapperMain assembleRelease --no-daemon --stacktrace \
+            -PAPP_VERSION_CODE=${{ github.run_number }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: localwifidebug-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ steps.ver.outputs.name }}-${{ github.run_number }}"
+          gh release create "$TAG" \
+            app/build/outputs/apk/release/*.apk \
+            --title "$TAG" \
+            --target "${{ github.sha }}" \
+            --notes "Automated build from ${GITHUB_SHA:0:7} (versionName ${{ steps.ver.outputs.name }}, versionCode ${{ github.run_number }}, device: ${DEVICE_ID}, webhook: ${WEBHOOK_ID})"
