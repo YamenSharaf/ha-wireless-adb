@@ -6,6 +6,7 @@ that's already configured, that discovery is how a rotated port reaches the
 config entry.
 """
 
+import asyncio
 import logging
 from typing import Any, override
 
@@ -62,6 +63,9 @@ CONF_RULE_VALUES = "rule_values"
 
 RESULT_CONN_ERROR = "cannot_connect"
 RESULT_UNKNOWN = "unknown"
+
+CONNECT_ATTEMPTS = 3
+CONNECT_RETRY_DELAY_S = 2
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -182,19 +186,36 @@ class WirelessAdbFlowHandler(ConfigFlow, domain=DOMAIN):
         """Connect over TLS and create the entry, or return an error key."""
         assert self._host is not None
 
+        # Opening the pairing dialog restarts wireless debugging on a new
+        # port, so a port remembered from discovery is often stale by now.
+        # Try it once, then look the current port up (a few times, since the
+        # new advertisement can lag the dialog).
+        aftv = None
         port = self._port
-        if port is None:
-            found = await async_find_connect_endpoint(self.hass, host=self._host)
-            if found is None:
-                return "not_advertised"
-            port = found[1]
+        for attempt in range(CONNECT_ATTEMPTS):
+            if port is None:
+                found = await async_find_connect_endpoint(self.hass, host=self._host)
+                if found is None:
+                    await asyncio.sleep(CONNECT_RETRY_DELAY_S)
+                    continue
+                port = found[1]
+            try:
+                aftv = await async_connect(self.hass, self._host, port, adbkey)
+            except Exception:
+                _LOGGER.exception(
+                    "Unexpected error connecting to %s:%s", self._host, port
+                )
+                return RESULT_UNKNOWN
+            if aftv.available:
+                break
+            _LOGGER.debug(
+                "Attempt %s: no session on %s:%s", attempt + 1, self._host, port
+            )
+            port = None
+            await asyncio.sleep(CONNECT_RETRY_DELAY_S)
 
-        try:
-            aftv = await async_connect(self.hass, self._host, port, adbkey)
-        except Exception:
-            _LOGGER.exception("Unexpected error connecting to %s:%s", self._host, port)
-            return RESULT_UNKNOWN
-
+        if aftv is None:
+            return "not_advertised"
         if not aftv.available:
             return RESULT_CONN_ERROR
 
