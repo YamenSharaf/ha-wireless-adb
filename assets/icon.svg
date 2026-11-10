@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -24 512 536" width="512" height="536">
+  <!-- Wireless ADB: a TV with a shell prompt, and signal arcs above it. Original design. -->
+  <g fill="none" stroke="#3DDC84" stroke-linecap="round" stroke-width="26">
+    <path d="M196 92 A84 84 0 0 1 316 92"/>
+    <path d="M150 58 A148 148 0 0 1 362 58"/>
+  </g>
+  <circle cx="256" cy="128" r="17" fill="#3DDC84"/>
+  <rect x="40" y="160" width="432" height="272" rx="44" fill="#3DDC84"/>
+  <rect x="70" y="190" width="372" height="212" rx="22" fill="#073042"/>
+  <path d="M136 252 L196 296 L136 340" fill="none" stroke="#3DDC84" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="222" y="322" width="96" height="26" rx="13" fill="#3DDC84"/>
+  <rect x="186" y="444" width="140" height="26" rx="13" fill="#3DDC84"/>
+</svg>
