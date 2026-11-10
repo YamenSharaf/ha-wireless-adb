@@ -99,4 +99,15 @@ the unmodified upstream code, so every change is visible as a diff. Built on
 [`adb-shell-wifi`](https://pypi.org/project/adb-shell-wifi/) by Jason Novak,
 which are forks of Jeff Irion's `python-androidtv` and `adb_shell`.
 
+The TV helper app in [`android/`](android/) is based on
+[stevene1919/localwifidebug](https://github.com/stevene1919/localwifidebug) (MIT).
+
 Licensed under the Apache License 2.0; see [LICENSE](LICENSE).
+
+## Repository layout
+
+- `custom_components/wireless_adb/`: the Home Assistant integration
+- `android/`: the TV helper app that turns wireless debugging back on at boot
+  (Kotlin; built by `.github/workflows/android.yml` and published as
+  `app-v…` prereleases)
+- `assets/`: source artwork

@@ -16,8 +16,6 @@
 local.properties
 aapt2
 gradlew
+# The release signing key lives in the ANDROID_KEYSTORE_BASE64 repository
+# secret; CI writes it to app/release.keystore for the build only.
 *.keystore
-# Committed on purpose: stable release signing key so app updates keep the same
-# signature (private repo). Keeping a fixed key means ADB-granted
-# WRITE_SECURE_SETTINGS survives updates instead of being wiped on every install.
-!app/release.keystore

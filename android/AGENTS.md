@@ -5,7 +5,7 @@ This project is a native Android (Kotlin) application designed for Google/Androi
 ## Core Mandates
 - **No Autonomous Sync:** Do NOT sync, push, or commit changes to GitHub unless specifically instructed by the user in the current turn.
 - **No Autonomous Builds:** Do NOT run build commands (e.g., `./gradlew assembleDebug`, `gradle build`) unless specifically instructed by the user in the current turn.
-- **Security & Secrets:** NEVER upload or commit real secrets (API tokens, private keys, production passwords) to GitHub; keep them in local, ignored files. **Deliberate exception (private repo):** the release signing keystore `app/release.keystore` (throwaway password `<keystore-password>`) and the HA webhook/device defaults live in the repo/workflow on purpose so CI can build and sign — see [CI / Build Pipeline](#ci--build-pipeline). Do not "fix" this by removing them.
+- **Security & Secrets:** NEVER upload or commit real secrets (API tokens, private keys, production passwords) to GitHub; keep them in local, ignored files. The release signing keystore is **not** in the repo: CI gets it from repository secrets (see [CI / Build Pipeline](#ci--build-pipeline)). Never commit it. The HA webhook/device defaults in the workflow are LAN-only and fine to keep (they go away when the app stops reporting to a webhook).
 
 ## Objective
 Enable a "one-click" synchronization of the Android Wireless Debugging port to Home Assistant, allowing the HA Android TV integration (ADB) to reconnect without manual intervention when the port changes.
@@ -72,12 +72,12 @@ adb shell monkey -p com.enuff.localwifidebug -c android.intent.category.LAUNCHER
 ```
 
 ## CI / Build Pipeline
-GitHub Actions (`.github/workflows/build-apk.yml`) builds and releases the APK. Key decisions:
-- **Triggers:** push to `main`, plus manual `workflow_dispatch`. Push builds use the hardcoded default webhook/HA-URL/device inputs (`<webhook-id>` / `<ha-host>:8123` / `<device-id>`); manual runs can override them. These get compiled into `BuildConfig` at build time.
-- **No `gradlew`:** the repo ships only the wrapper jar, so CI invokes it directly (`java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain assembleRelease`).
-- **Versioning (hybrid):** `versionCode` is driven automatically by the Actions run number (CI passes `-PAPP_VERSION_CODE=${run_number}`) so every build is a strictly-increasing, installable upgrade. `versionName` is bumped intentionally by a human via `scripts/bump.sh [patch|minor|major]`.
-- **Releases:** each build publishes a GitHub Release tagged `v<versionName>-<run#>` with the signed APK attached (built-in `gh` CLI; needs `permissions: contents: write`).
-- **Stable committed keystore:** `app/release.keystore` is committed (not generated per build) so every APK shares one signature. This is what makes in-place updates work — and therefore lets the ADB-granted `WRITE_SECURE_SETTINGS` **persist across updates instead of being wiped on every reinstall**. If the signing key ever changes, devices need a one-time uninstall + reinstall + re-grant.
+Since 2026-11-10 the app lives in `android/` of the `ha-wireless-adb` repo (moved from `YamenSharaf/localwifidebug` with its history). GitHub Actions (`.github/workflows/android.yml` at the repo root, `working-directory: android`) builds and releases the APK. Key decisions:
+- **Triggers:** push to `main` touching `android/**` (docs excluded), plus manual `workflow_dispatch`. Push builds use the hardcoded default webhook/HA-URL/device inputs (`<webhook-id>` / `<ha-host>:8123` / `<device-id>`); manual runs can override them. These get compiled into `BuildConfig` at build time.
+- **No `gradlew`:** the project ships only the wrapper jar, so CI invokes it directly (`java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain assembleRelease`).
+- **Versioning (hybrid):** `versionCode` = Actions run number **+ 100** (`VERSION_CODE_OFFSET`). Run numbers restarted at 1 in the new repo while the last localwifidebug build was versionCode 7, so the offset keeps every build an installable in-place upgrade. `versionName` is bumped intentionally by a human via `scripts/bump.sh [patch|minor|major]`.
+- **Releases:** each build publishes a GitHub **prerelease** tagged `app-v<versionName>-<versionCode>` with the signed APK attached. Prerelease + `app-` prefix because HACS reads this repo's releases as integration versions and ignores prereleases by default.
+- **Stable signing key, from secrets:** every APK is signed with the same key so updates install in place and the ADB-granted `WRITE_SECURE_SETTINGS` **survives updates instead of being wiped on every reinstall**. The keystore is NOT in the repo (it was filtered out of the imported history): CI restores it from the `ANDROID_KEYSTORE_BASE64` secret (password in `ANDROID_KEYSTORE_PASSWORD`, alias `localwifidebug`) and deletes it after the build. Certificate SHA-256 `6E:A4:6C:99:D9:A0:48:FC:11:49:02:6F:5C:0A:76:26:63:F5:6F:C4:89:08:45:D9:7E:FE:95:8C:1F:4B:76:1B`. If the signing key ever changes, devices need a one-time uninstall + reinstall + re-grant.
 
 ## Home Assistant Integration
 
