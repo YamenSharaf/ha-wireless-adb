@@ -1,0 +1,98 @@
+name: Integration
+
+# Validates the integration on every change and publishes a release whenever
+# the version in manifest.json changes. To release: bump "version" in
+# custom_components/wireless_adb/manifest.json and push to main.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'custom_components/**'
+      - 'hacs.json'
+      - '.github/workflows/integration.yml'
+  pull_request:
+    paths:
+      - 'custom_components/**'
+      - 'hacs.json'
+      - '.github/workflows/integration.yml'
+  schedule:
+    # Weekly, so breaking changes in Home Assistant beta show up early.
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  hassfest:
+    name: hassfest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: hacs/action@main
+        with:
+          category: integration
+
+  release:
+    name: Release
+    needs: [hassfest, hacs]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags and history for the release notes
+
+      - name: Read version
+        id: ver
+        run: |
+          VERSION=$(jq -r .version custom_components/wireless_adb/manifest.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::notice::v$VERSION is already released; bump the version in manifest.json to publish a new one"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Integration releases are tagged v<version>; the helper app's builds
+      # use app-v… prerelease tags and are left out of the notes.
+      - name: Create release
+        if: steps.ver.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          PREV=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          RANGE=${PREV:+$PREV..}HEAD
+          {
+            echo "## Changes"
+            echo
+            git log --no-merges --format='- %s (%h)' "$RANGE" -- custom_components hacs.json
+            if [ -n "$PREV" ]; then
+              echo
+              echo "**Full diff:** https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...v${VERSION}"
+            fi
+          } > notes.md
+          cat notes.md
+
+          FLAGS=()
+          # Versions like 0.2.0b1 or 0.2.0rc1 are published as prereleases.
+          if [[ "$VERSION" =~ (a|b|rc|dev)[0-9]*$ ]]; then FLAGS+=(--prerelease); fi
+
+          gh release create "v$VERSION" \
+            --title "Wireless ADB $VERSION" \
+            --target "$GITHUB_SHA" \
+            --notes-file notes.md \
+            "${FLAGS[@]}"

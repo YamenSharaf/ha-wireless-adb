@@ -56,8 +56,24 @@ integrations (Android TV Remote, Bravia), matched by MAC address.
 
 ## Installation
 
-Not in HACS yet. Copy `custom_components/wireless_adb` into your
-Home Assistant `config/custom_components/` folder and restart.
+Through the Marketplace (HACS) as a custom repository:
+
+1. *Marketplace > ⋮ > Custom repositories*
+2. Repository: `https://github.com/YamenSharaf/ha-wireless-adb`, type
+   **Integration**, then **Add**.
+3. Open **Wireless ADB**, download it, and restart Home Assistant.
+
+Or copy `custom_components/wireless_adb` into your Home Assistant
+`config/custom_components/` folder by hand and restart.
+
+## Releases
+
+A release is published automatically when the `version` in
+`custom_components/wireless_adb/manifest.json` changes on `main`
+(`.github/workflows/integration.yml`, after hassfest and HACS validation pass).
+Versions ending in `a`, `b`, `rc` or `dev` plus a number (e.g. `0.2.0b1`) are
+published as prereleases. The helper app's builds are separate prereleases
+tagged `app-v…`.
 
 ## Setup
 

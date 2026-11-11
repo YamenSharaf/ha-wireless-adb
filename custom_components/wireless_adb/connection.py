@@ -50,6 +50,10 @@ def _ensure_adbkey(path: str) -> None:
     if not os.path.isfile(path):
         _LOGGER.info("Generating a new ADB key at %s", path)
         keygen(path)
+    # Anyone holding the private key can act as this Home Assistant on every
+    # paired device, so keep it readable by Home Assistant only.
+    if os.stat(path).st_mode & 0o077:
+        os.chmod(path, 0o600)
 
 
 def _read_keypair(path: str) -> tuple[bytes, bytes]:
