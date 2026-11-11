@@ -26,11 +26,16 @@ android {
         // ADB (see WebhookConfig.kt), so one APK works for every device.
     }
 
+    // Release key: app/release.keystore, written by CI from repository
+    // secrets. Without it (local builds, forks) both build types fall back to
+    // the Android debug key; such APKs can't update a release install.
+    def releaseKeystore = file("release.keystore")
+
     signingConfigs {
         release {
             def storePass = localProperties.getProperty('RELEASE_STORE_PASSWORD', "dummy")
             def keyPass = localProperties.getProperty('RELEASE_KEY_PASSWORD', storePass) // PKCS12 uses same password
-            storeFile file("release.keystore")
+            storeFile releaseKeystore
             storePassword storePass
             keyAlias localProperties.getProperty('RELEASE_KEY_ALIAS', "dummy")
             keyPassword keyPass
@@ -39,12 +44,12 @@ android {
 
     buildTypes {
         release {
-            signingConfig signingConfigs.release
+            signingConfig releaseKeystore.exists() ? signingConfigs.release : signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
-            signingConfig signingConfigs.release
+            signingConfig releaseKeystore.exists() ? signingConfigs.release : signingConfigs.debug
         }
     }
     compileOptions {

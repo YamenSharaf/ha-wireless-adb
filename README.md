@@ -50,9 +50,9 @@ integrations (Android TV Remote, Bravia), matched by MAC address.
 - An Android TV / Google TV device on Android 11+ with *Developer options >
   Wireless debugging* turned on
 - **Wireless debugging must be on after every reboot.** Android turns it off
-  when the device restarts. On TVs this needs a small helper app that turns it
-  back on at boot (it needs `WRITE_SECURE_SETTINGS`, granted once over ADB).
-  A shareable helper is planned; for now this is up to you.
+  when the device restarts. The [Wireless ADB Helper](android/) app turns it back
+  on at boot; install it once (see its README). The integration will soon
+  install and update it for you.
 
 ## Installation
 
@@ -100,14 +100,15 @@ the unmodified upstream code, so every change is visible as a diff. Built on
 which are forks of Jeff Irion's `python-androidtv` and `adb_shell`.
 
 The TV helper app in [`android/`](android/) is based on
-[stevene1919/localwifidebug](https://github.com/stevene1919/localwifidebug) (MIT).
+[stevene1919/localwifidebug](https://github.com/stevene1919/localwifidebug) and
+is licensed under MIT ([android/LICENSE](android/LICENSE)).
 
-Licensed under the Apache License 2.0; see [LICENSE](LICENSE).
+The integration is licensed under the Apache License 2.0; see [LICENSE](LICENSE).
 
 ## Repository layout
 
 - `custom_components/wireless_adb/`: the Home Assistant integration
 - `android/`: the TV helper app that turns wireless debugging back on at boot
-  (Kotlin; built by `.github/workflows/android.yml` and published as
+  (Kotlin, MIT; built by `.github/workflows/android.yml` and published as
   `app-v…` prereleases)
 - `assets/`: source artwork

@@ -1,109 +1,136 @@
-# Wireless ADB Helper
+# Wireless ADB Helper: notes for contributors and coding agents
 
-This project is a native Android (Kotlin) application designed for Google/Android TV devices. It autonomously enables Wireless Debugging, discovers the assigned random port, and reports it to a Home Assistant webhook — **headlessly**, primarily on device boot. See [Architecture](#architecture-headless-port-sync).
+Native Android (Kotlin) app for Android TV / Google TV. It keeps **wireless
+debugging** on, headlessly, so the Wireless ADB Home Assistant integration (in
+`../custom_components/wireless_adb`) can reach the device. User-facing docs are
+in [README.md](README.md).
 
-## Core Mandates
-- **No Autonomous Sync:** Do NOT sync, push, or commit changes to GitHub unless specifically instructed by the user in the current turn.
-- **No Autonomous Builds:** Do NOT run build commands (e.g., `./gradlew assembleDebug`, `gradle build`) unless specifically instructed by the user in the current turn.
-- **Security & Secrets:** NEVER upload or commit real secrets (API tokens, private keys, production passwords) to GitHub; keep them in local, ignored files. The release signing keystore is **not** in the repo: CI gets it from repository secrets (see [CI / Build Pipeline](#ci--build-pipeline)). Never commit it.
+## Mandates
 
-## Objective
-Enable a "one-click" synchronization of the Android Wireless Debugging port to Home Assistant, allowing the HA Android TV integration (ADB) to reconnect without manual intervention when the port changes.
+- **Don't push, tag or release** unless the maintainer asked for it in the
+  current conversation.
+- **Don't run builds** unless asked. CI builds every push that touches
+  `android/`.
+- **Never commit signing material.** The release keystore lives only in the
+  repository secrets (see CI below). `*.keystore` is git-ignored.
+- **Keep one APK for every device.** Nothing device- or network-specific may be
+  compiled in; per-device settings are runtime settings set over ADB.
 
-## App Details
-- **App Name:** Wireless ADB Helper
-- **Package ID:** `dev.yamen.wirelessadb`
-- **Main Activity:** `.MainActivity`
-- **Webhook (optional, off by default, since 2.1.0):** a runtime setting in app-private SharedPreferences, set over ADB via `ConfigReceiver` (`am broadcast --include-stopped-packages -a dev.yamen.wirelessadb.CONFIGURE -n dev.yamen.wirelessadb/.ConfigReceiver --es webhook_url <url> --es device_id <name>`; no extras = show, `--ez clear true` = off). The receiver requires the sender to hold `WRITE_SECURE_SETTINGS`, so only ADB/system can set it. `device_id` defaults to `Build.MODEL`. No build-time webhook constants any more: one APK fits every device.
+## App facts
 
-## Architecture (headless port sync)
-The sync runs **headlessly** — no UI, no screen takeover. Two triggers feed one code path:
-- **On boot (primary):** `BootReceiver` (`RECEIVE_BOOT_COMPLETED`) enqueues the sync. Wireless Debugging is off after a reboot and returns on a new random port, so the device **proactively pushes** the fresh port to HA rather than waiting to be launched.
-- **Manual / recovery:** `MainActivity` is an invisible launcher — plain `Activity` with `Theme.Invisible` (`windowNoDisplay`; `noHistory` + `excludeFromRecents` + empty `taskAffinity`, no window animation). It shows no window, enqueues the same worker, and `finish()`es in `onCreate`. HA's `remote.turn_on` with `activity: wirelessadb://launch` (via the Android-TV **Remote** integration — independent of ADB) and `adb monkey LAUNCHER` both hit this. Use the app link, not the bare package name: the Remote integration turns a package name into `market://launch?id=<pkg>`, and since the Play Store update of ~2026-10-20 nothing on the Bravia resolves `market://`, so those launches fail silently (logcat: `AtvRemote.AppLinkFeature: Failed to launch app link`); launching also clears Android's "stopped state" so `BOOT_COMPLETED` will fire.
+- Package / namespace: `dev.yamen.wirelessadb`; label "Wireless ADB Helper".
+- `minSdk 30` (wireless debugging needs Android 11), `targetSdk 34`.
+- Entry points:
+  - `BootReceiver` (`BOOT_COMPLETED`): enqueues the sync at boot.
+  - `MainActivity`: invisible launcher (`Theme.Invisible` with
+    `windowNoDisplay`, `noHistory`, `excludeFromRecents`, empty
+    `taskAffinity`). Enqueues the sync and `finish()`es in `onCreate`. Reached
+    from the launcher, `adb shell monkey`, and the app links
+    `wirelessadb://launch` and (legacy) `localwifidebug://launch`.
+  - `ConfigReceiver`: optional webhook setting, see below.
+- Logcat tags: `WiFiDebugWorker`, `WiFiDebugActivity`, `WiFiDebugBoot`,
+  `WirelessAdbConfig`. Some vendor builds (e.g. Sony Bravia, Android 14) drop
+  third-party app logs, so don't rely on logcat to confirm behaviour.
 
-Both enqueue **`SyncWorker`** (WorkManager, **expedited**): enable WD (`WRITE_SECURE_SETTINGS`) → `NetworkType.CONNECTED` constraint → **if a webhook is configured**: mDNS discover `_adb-tls-connect._tcp.` (8s timeout) → **single** POST to it. Without a webhook the job ends after enabling WD (the Wireless ADB integration finds the port over mDNS itself).
-- **Own-service match (1.1.1):** discovery sees every device on the LAN with Wireless Debugging on, so a resolved service only counts if one of its addresses is one of this device's own interface addresses (`NetworkInterface`, no permission needed). Resolves are queued one at a time (older NsdManager stacks reject concurrent resolves). Before 1.1.1 the worker took the first service that resolved and reported a Samsung device's port (40501) after the 03:01 standby restarts on 2026-11-09/10; ADB Keeper's own mDNS lookup masked it.
-- **Retry boundary:** "done" = webhook **HTTP 2xx only**. The worker has zero visibility into whether the add-on then reconnects over ADB, so it never retries on downstream state. Bounded to 3 attempts to deliver one POST past transient failures; no port discovered → **no POST invented** (the HA add-on's own ~60s mDNS watch is the backstop).
-- **Feedback:** notifications only — **no toasts**. A high-importance `WRITE_SECURE_SETTINGS` self-check fires a notification with the exact `pm grant` command if the grant is missing (that grant does **not** survive a signature-changed reinstall and can't be UI-granted). On Android TV notifications may not render visibly; the real success signal is the webhook POST / logcat tags `WiFiDebugWorker`, `WiFiDebugActivity`. The OS's own "wireless debugging enabled" toast appears only when a recovery actually re-enables WD — unsuppressable and expected.
-- **Expedited work** runs as a JobScheduler job on the API-34 target (no `foregroundServiceType` landmine); `getForegroundInfo` + `FOREGROUND_SERVICE` exist only as the API<31 fallback. `BootReceiver` stamps enqueue time; the worker logs enqueue→run latency + attempt so silent expedited-quota degradation is observable.
+## How the sync works
 
-### Two-part system (coordinate before changing the contract)
-This app is **one half** of a system. A separate **HA/add-on** side (an "ADB Keeper" add-on) consumes the webhook, connects over ADB, runs `adb tcpip <classic_port>` (5556 since 2026-11-01: Sony's webapi can grab 5555 at boot), and reloads the `androidtv` integration. When the webhook is configured, the **contract is fixed**: `POST <webhook_url>` with body `{ "port": <int>, "device_id": "<string>" }`. HA reads only `port`, but `device_id` must keep being sent (future multi-TV branching). Do **not** change the webhook id / port / URL / payload / add auth without coordinating the HA side in lockstep.
+`SyncWorker` (WorkManager, **expedited**, unique work, `REPLACE`):
 
-### Deferred (non-blocking)
-- **Expedited-quota stress test** — parked (user doesn't rapid-reboot; `BOOT_COMPLETED` is a protected broadcast, so ADB can't fake reboots). If ever needed: add a DEBUG-only exported receiver (e.g. action `dev.yamen.wirelessadb.DEBUG_ENQUEUE`) that enqueues the same worker, to fire rapidly over ADB and watch for the silent deferred-fallback.
-- **Plex refresh-switch hitch** — not yet exercised under 24fps/48Hz DV playback; watch during normal use.
+1. Self-check `WRITE_SECURE_SETTINGS`. If missing, post a high-importance
+   notification with the exact `pm grant` command and fail. The grant can't be
+   given from the UI and doesn't survive an uninstall/reinstall, so a silent
+   failure here would leave the app inert.
+2. Set `Settings.Global.adb_wifi_enabled = 1` if it's off, then wait briefly
+   for adbd to start.
+3. **Only if a webhook is configured:** find this device's own
+   `_adb-tls-connect._tcp` port over mDNS and POST it once.
 
-## Installation & Deployment (via ADB)
+Without a webhook the job ends after step 2. The integration finds the port by
+itself.
 
-### 1. Build the APK
-Navigate to the project directory and run:
+Details that matter:
+
+- **Own-service match.** mDNS discovery returns every device on the LAN with
+  wireless debugging on (phones, other TVs). A resolved service only counts if
+  one of its addresses is one of this device's own interface addresses. Resolves
+  run one at a time: older `NsdManager` stacks reject concurrent resolves.
+- **Retry boundary.** "Done" means the webhook returned HTTP 2xx. The worker
+  can't see what happens downstream and never retries on it. At most 3 attempts;
+  no port found means no POST.
+- **Expedited work** runs as a JobScheduler job on API 31+. `getForegroundInfo`
+  and `FOREGROUND_SERVICE` exist only for the API < 31 fallback.
+  `BootReceiver` stamps the enqueue time so a deferred (out-of-quota) run shows
+  up as latency in the log.
+- **No toasts, no UI.** Android itself shows a "wireless debugging enabled"
+  toast when the setting flips on; that's expected and can't be suppressed.
+
+### Launching from Home Assistant
+
+Use the Android TV Remote integration's `remote.turn_on` with
+`activity: wirelessadb://launch`. Don't pass the package name: the Remote
+integration turns a bare package name into `market://launch?id=<pkg>`, which
+fails silently on devices where nothing resolves `market://` (seen on a Sony
+Bravia after a Play Store update in October 2026).
+
+## Optional webhook
+
+Off by default. `WebhookConfig` stores `url` and `device_id` (default
+`Build.MODEL`) in app-private SharedPreferences. `ConfigReceiver` sets, shows
+or clears them:
+
 ```bash
-export ANDROID_HOME=$HOME/android-sdk
-export PATH=$HOME/gradle/gradle-8.1.1/bin:$PATH
-# Ensure the ARM64 AAPT2 patch is applied to the Gradle cache if building on ARM64
-./gradlew assembleDebug
+adb shell am broadcast --include-stopped-packages \
+  -a dev.yamen.wirelessadb.CONFIGURE -n dev.yamen.wirelessadb/.ConfigReceiver \
+  --es webhook_url <url> --es device_id <name>   # or no extras / --ez clear true
 ```
 
-### 2. Connect & Install
-```bash
-adb connect 192.168.50.10:5555
-adb install /opt/usb/steven/projects/localwifidebug/app/build/outputs/apk/debug/app-debug.apk
-```
+The receiver is exported but declares
+`android:permission="android.permission.WRITE_SECURE_SETTINGS"`, so only the
+ADB shell and the system can send it; no app on the device can redirect where
+the port goes.
 
-### 3. Critical Permissions (Manual Grant Required)
-`WRITE_SECURE_SETTINGS` must be granted over ADB (it cannot be UI-granted):
-```bash
-# Allow toggling system settings (Wireless Debugging)
-adb shell pm grant dev.yamen.wirelessadb android.permission.WRITE_SECURE_SETTINGS
+Payload contract (keep it stable while anyone depends on it):
+`POST <url>` with `{"port": <int>, "device_id": "<string>"}`.
 
-# Allow showing notifications on Android 13+
-adb shell pm grant dev.yamen.wirelessadb android.permission.POST_NOTIFICATIONS
-```
+The webhook only exists for setups that switch the device to classic ADB
+through an external ADB server. Remove it once nothing depends on it.
 
-**Grant persistence:** thanks to the stable committed keystore, an **in-place update** (`adb install -r`, same signature) **keeps all grants** — no re-grant needed. Only a **signature change** (e.g. the historical throwaway-key builds → the stable key) forces uninstall + reinstall, which silently drops `WRITE_SECURE_SETTINGS`. The worker's self-check will surface that with a `pm grant` notification. Full one-time-per-device migration on a signature change:
-```bash
-adb uninstall dev.yamen.wirelessadb
-adb install app-release.apk
-adb shell pm grant dev.yamen.wirelessadb android.permission.WRITE_SECURE_SETTINGS
-adb shell pm grant dev.yamen.wirelessadb android.permission.POST_NOTIFICATIONS
-# Clear Android's "stopped state" so BOOT_COMPLETED will fire:
-adb shell monkey -p dev.yamen.wirelessadb -c android.intent.category.LAUNCHER 1
-```
+## Signing and updates
 
-## CI / Build Pipeline
-Since 2026-11-10 the app lives in `android/` of the `ha-wireless-adb` repo (moved from `YamenSharaf/localwifidebug` with its history). GitHub Actions (`.github/workflows/android.yml` at the repo root, `working-directory: android`) builds and releases the APK. Key decisions:
-- **Triggers:** push to `main` touching `android/**` (docs excluded), plus manual `workflow_dispatch` (no inputs: nothing device-specific is compiled in).
-- **No `gradlew`:** the project ships only the wrapper jar, so CI invokes it directly (`java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain assembleRelease`).
-- **Versioning (hybrid):** `versionCode` = Actions run number **+ 100** (`VERSION_CODE_OFFSET`). Run numbers restarted at 1 in the new repo while the last localwifidebug build was versionCode 7, so the offset keeps every build an installable in-place upgrade. `versionName` is bumped intentionally by a human via `scripts/bump.sh [patch|minor|major]`.
-- **Releases:** each build publishes a GitHub **prerelease** tagged `app-v<versionName>-<versionCode>` with the signed APK attached. Prerelease + `app-` prefix because HACS reads this repo's releases as integration versions and ignores prereleases by default.
-- **Stable signing key, from secrets:** every APK is signed with the same key so updates install in place and the ADB-granted `WRITE_SECURE_SETTINGS` **survives updates instead of being wiped on every reinstall**. The keystore is NOT in the repo: CI restores it from the `ANDROID_KEYSTORE_BASE64` secret (password in `ANDROID_KEYSTORE_PASSWORD`, alias `wirelessadb`) and deletes it after the build. The owner keeps the keystore and password in a password manager. If the signing key ever changes, devices need a one-time uninstall + reinstall + re-grant.
-- **Rename (2.0.0, 2026-11):** the app was `com.enuff.localwifidebug` ("Local WiFi Debug Sync"), signed with an older key whose keystore was filtered out of the imported history. It is now `dev.yamen.wirelessadb` ("Wireless ADB Helper") with a new 4096-bit RSA key (CN=Yamen Sharaf, OU/O=yamen.dev, Berlin, DE; certificate SHA-256 `50:3A:B6:5A:9A:A9:14:D6:EC:2C:35:4C:E2:6A:D5:9E:BD:77:E4:F1:E1:4C:62:BF:75:CE:8D:8D:5F:40:EB:7C`, first used for app-v2.0.0-101). Android treats it as a different app: each TV needs a one-time uninstall of the old package, install of the new one, `pm grant dev.yamen.wirelessadb android.permission.WRITE_SECURE_SETTINGS` (+ `POST_NOTIFICATIONS`), and one launch. The old `localwifidebug://launch` link is still accepted next to `wirelessadb://launch`.
+Android identifies an app by package name **and** signing certificate. Updates
+signed with the same key install in place and keep ADB-granted permissions; a
+different key means uninstall, reinstall and re-grant.
 
-## Home Assistant Integration
+- Release key: 4096-bit RSA, `CN=Yamen Sharaf, OU=yamen.dev, O=yamen.dev,
+  L=Berlin, ST=Berlin, C=DE`, alias `wirelessadb`, certificate SHA-256
+  `50:3A:B6:5A:9A:A9:14:D6:EC:2C:35:4C:E2:6A:D5:9E:BD:77:E4:F1:E1:4C:62:BF:75:CE:8D:8D:5F:40:EB:7C`.
+- Builds without `app/release.keystore` fall back to the Android debug key.
+- Before 2.0.0 the app was `com.enuff.localwifidebug` with another key. Moving
+  a device over is a one-time uninstall of the old package, install, `pm grant`,
+  and one launch.
 
-### Script
-Add this to your `scripts.yaml` to launch the app from HA:
-```yaml
-local_wifi_debug_sync:
-  alias: "Wireless ADB Helper"
-  description: "Launches the WiFi Debug app to report its random port to HA"
-  sequence:
-    - service: remote.turn_on
-      target:
-        entity_id: remote.steven_tv
-      data:
-        activity: "wirelessadb://launch"   # not the package name: market:// links no longer resolve
-  mode: single
-  icon: mdi:wifi-sync
-```
+## CI
 
-### Automation Suggestion
-The reported port can be used to update the `media_player` configuration or trigger an ADB reconnection service in Home Assistant.
+`.github/workflows/android.yml` (repo root, `working-directory: android`):
 
-## Technical Notes (ARM64 Build Environment)
-Since this environment is ARM64, the standard Android SDK `aapt2` (x86_64) will fail.
-- A native ARM64 `aapt2` binary is required at the project root: `localwifidebug/aapt2` (this binary is excluded from the git repository).
-- During builds, this binary is patched into the Gradle cache: `~/.gradle/caches/transforms-3/.../transformed/aapt2-8.1.1-10154469-linux/aapt2`.
-- `android.useAndroidX=true` and `android.enableJetifier=true` are required in `gradle.properties`.
-- `android:usesCleartextTraffic="true"` is enabled in the manifest for local HTTP communication to Home Assistant.
+- Runs on pushes to `main` that touch `android/**` (Markdown excluded) and on
+  manual dispatch.
+- The project has no `gradlew` script, only the wrapper jar:
+  `java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain assembleRelease`.
+- `versionCode` = run number + 100 (`VERSION_CODE_OFFSET`; never lower it,
+  later builds would look like downgrades). `versionName` is bumped by hand with
+  `scripts/bump.sh [patch|minor|major]`.
+- With the secrets `ANDROID_KEYSTORE_BASE64` and `ANDROID_KEYSTORE_PASSWORD`
+  present, the APK is release-signed and published as a **prerelease** tagged
+  `app-v<versionName>-<versionCode>`. Prerelease, because HACS reads this
+  repo's releases as integration versions and skips prereleases. The keystore
+  is deleted after the build.
+- Without the secrets (forks), the build is debug-signed and only uploaded as a
+  workflow artifact.
+
+## Building on ARM64
+
+The SDK's `aapt2` is x86_64 only. On an ARM64 host, put a native `aapt2` at the
+project root (git-ignored) and point Gradle at it, e.g. with
+`android.aapt2FromMavenOverride=<path>` in `gradle.properties` of your local
+setup. Prebuilt binaries: [ReVanced/aapt2](https://github.com/ReVanced/aapt2/releases).

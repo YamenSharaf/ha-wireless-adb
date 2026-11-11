@@ -1,192 +1,101 @@
 # Wireless ADB Helper
 
-Upstream Repo: https://github.com/stevene1919/localwifidebug
+A tiny, headless Android TV app that keeps **wireless debugging** turned on. It
+is the device-side half of the [Wireless ADB](../README.md) Home Assistant
+integration.
 
-**Wireless ADB Helper** is a specialized Android application (Kotlin) designed to automate the synchronization of the **Wireless Debugging** port on Android TV devices (like Chromecast with Google TV) with **Home Assistant**.
+## Why it exists
 
-## Why this exists
-The [Android Debug Bridge (ADB) Integration](https://www.home-assistant.io/integrations/androidtv/) in Home Assistant often loses connection because:
-1.  **Wireless Debugging is disabled on reboot** by the Android system.
-2.  **The port is randomly assigned** each time Wireless Debugging is toggled on.
+Android turns wireless debugging off whenever the device restarts. Without it,
+Home Assistant can't reach the TV over ADB, and only something running *on* the
+TV can turn it back on (it takes the `WRITE_SECURE_SETTINGS` permission, which
+can only be granted over ADB).
 
-This app allows for a "one-click" sync that:
-1.  Enables Wireless Debugging (if not already on).
-2.  Discovers the current random port using mDNS.
-3.  Reports that port to a Home Assistant webhook.
+The helper does exactly that:
 
-## How it Works
-The following diagram illustrates the automated sequence from launching the app to establishing a stable ADB connection on port 5555:
+- **At boot**, it turns wireless debugging back on.
+- **When launched** (from the TV, over ADB, or from Home Assistant through the
+  [Android TV Remote](https://www.home-assistant.io/integrations/androidtv_remote/)
+  integration with the link `wirelessadb://launch`), it does the same.
 
-![Technical Flowchart](flowchart.png)
+It shows no window and leaves nothing in recents. Finding the (random,
+rotating) wireless-debugging port is the integration's job: the TV advertises it
+over mDNS, and Home Assistant picks it up.
 
-## Key Features
-- **Zero-Touch Execution:** The app performs its task and closes itself immediately upon launch.
-- **mDNS Service Discovery:** Uses `NsdManager` to find the `_adb-tls-connect._tcp.` service locally.
-- **Visual Feedback:** Provides system-level notifications and Toast messages on the TV.
+## Install
 
-## Requirements
-- **Static IP Address:** It is highly recommended to assign a static IP address (or DHCP reservation) to your Android TV device for reliable ADB connections.
-- Android 11+ (Required for Wireless Debugging).
-- ADB access to grant initial secure permissions.
-- **[Home Assistant Android TV Remote Integration](https://www.home-assistant.io/integrations/androidtv_remote/):** Required to remotely launch the app on the TV.
-- Home Assistant with an active Webhook automation.
+> The Wireless ADB integration will soon install and update the helper for you.
+> Until then, install it by hand once:
 
-## Cloning the Repository
-To get started, clone this repository to your local machine:
+1. Download the latest `app-release.apk` from this repository's releases (tags
+   `app-v…`).
+2. With ADB connected to the TV:
+
+   ```bash
+   adb install -r app-release.apk
+   adb shell pm grant dev.yamen.wirelessadb android.permission.WRITE_SECURE_SETTINGS
+   adb shell pm grant dev.yamen.wirelessadb android.permission.POST_NOTIFICATIONS
+   # Launch once: Android doesn't deliver BOOT_COMPLETED to an app that has never run.
+   adb shell am start -a android.intent.action.VIEW -d wirelessadb://launch
+   ```
+
+Updates signed with the same key install in place and keep the permissions.
+A reinstall after an uninstall needs the `pm grant` lines again; the app shows a
+notification with the exact command if the permission is missing.
+
+### Permissions
+
+| Permission | Why |
+|---|---|
+| `WRITE_SECURE_SETTINGS` | Turn wireless debugging on (`adb_wifi_enabled`). Can only be granted over ADB. |
+| `RECEIVE_BOOT_COMPLETED` | Run at boot. |
+| `POST_NOTIFICATIONS` | Tell you when the permission above is missing. |
+| `INTERNET`, `ACCESS_NETWORK_STATE` | Only used for the optional webhook. |
+
+## Optional: report the port to a webhook
+
+Not needed with the Wireless ADB integration. For setups that still want a push
+(for example an ADB-server add-on that switches the TV to classic ADB), the
+helper can POST `{"port": <int>, "device_id": "<string>"}` to a URL after it
+turns wireless debugging on. It's off by default and set over ADB:
+
 ```bash
-git clone https://github.com/stevene1919/localwifidebug.git
-cd localwifidebug
+adb shell am broadcast --include-stopped-packages \
+  -a dev.yamen.wirelessadb.CONFIGURE -n dev.yamen.wirelessadb/.ConfigReceiver \
+  --es webhook_url http://homeassistant.local:8123/api/webhook/<id> \
+  --es device_id living_room_tv
 ```
 
-## Build Prerequisites
-Before building the project, ensure you have the following installed:
+Run the same command without `--es …` to show the current setting, or with
+`--ez clear true` to turn the webhook off. Only senders holding
+`WRITE_SECURE_SETTINGS` (the ADB shell, the system) can change it.
 
-1.  **Java Development Kit (JDK) 17:**
-    - On Linux (Ubuntu/Debian): `sudo apt install openjdk-17-jdk`
-    - On macOS: `brew install openjdk@17`
-    - On Windows: Download from Oracle or Adoptium.
-    - Set `JAVA_HOME` environment variable to your JDK path.
+## Build
 
-2.  **Android SDK:**
-    - Download and install the [Android Command Line Tools](https://developer.android.com/studio#command-line-tools-only).
-    - Use `sdkmanager` to install required components:
-      ```bash
-      sdkmanager "platforms;android-34" "build-tools;34.0.0" "extras;google;m2repository" "extras;android;m2repository"
-      ```
-    - Set `ANDROID_HOME` environment variable (e.g., `export ANDROID_HOME=$HOME/android-sdk`).
+Requirements: JDK 17 and the Android SDK (platform 34). The project ships the
+Gradle wrapper jar but no `gradlew` script, so call the wrapper directly:
 
-3.  **Gradle:**
-    - If `gradlew` is not present in the root directory, you can install Gradle manually:
-    - On Linux: `sudo apt install gradle`
-    - On macOS: `brew install gradle`
-    - Or generate the wrapper if you have Gradle installed: `gradle wrapper`.
-
-## Building the APK
-
-### Standard Environment
-If you are building on a standard x86_64 machine:
 ```bash
-./gradlew assembleDebug
+java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain assembleRelease
 ```
 
-### ARM64 Environment (e.g., Raspberry Pi)
-If building on an ARM64 Linux host, you must provide a native `aapt2` binary at the project root as the standard SDK binary is x86 only. You can download pre-compiled ARM64 binaries from community-maintained repositories:
--   **[ReVanced AAPT2 Releases](https://github.com/ReVanced/aapt2/releases)** (Recommended)
--   **[lzhiyong/android-sdk-tools](https://github.com/lzhiyong/android-sdk-tools)**
+Without a release key the build is signed with the Android debug key. Such an
+APK can't update an installed release build (different signature).
 
-1.  Place a native `aapt2` binary in the root directory.
-2.  Run the build:
-    ```bash
-    export ANDROID_HOME=$HOME/android-sdk
-    ./gradlew assembleDebug
-    ```
+Release builds come from CI (`.github/workflows/android.yml`). It signs with the
+key in the repository secrets `ANDROID_KEYSTORE_BASE64` and
+`ANDROID_KEYSTORE_PASSWORD` and publishes a prerelease tagged
+`app-v<versionName>-<versionCode>`. Forks without those secrets get a
+debug-signed APK as a build artifact and no release.
 
-## Installation
+## History
 
-This section details the one-time setup required on your Android TV device to enable wireless debugging and install the app.
-
-1.  **Enable Developer Options on your Android TV:**
-    *   Go to "Settings" -> "System" -> "About".
-    *   Scroll down and repeatedly click on "Build" (7 times) until you see a message that "You are now a developer!".
-
-2.  **Enable Wireless Debugging:**
-    *   Go back to "Settings" -> "System" -> "Developer Options".
-    *   Find and enable "Wireless debugging". Make a note of the IP address and pairing code displayed.
-
-3.  **Pair your device (if required):**
-    If this is the first time you're using wireless ADB with this device, you may need to pair it. Use the IP address and pairing code from Step 2.
-    ```bash
-    adb pair <TV_IP_ADDRESS>:<PORT_FROM_TV>
-    # You will be prompted to enter the pairing code shown on your TV.
-    ```
-    *(Note: Your PC's ADB client must be recent enough to support `adb pair`)*
-
-4.  **Connect via ADB to your TV** (replace with your TV's IP address and the random port from Step 2):
-    ```bash
-    `adb connect <TV_IP_ADDRESS>:<RANDOM_PORT_FROM_TV>`
-    ```
-
-5.  **Install the APK:**
-    ```bash
-    adb install app/build/outputs/apk/debug/app-debug.apk
-    ```
-
-6.  **Grant Critical Permissions:**
-    Run these commands via ADB to grant the necessary secure permissions declared in the manifest (`WRITE_SECURE_SETTINGS` and `POST_NOTIFICATIONS`):
-    ```bash
-    # Allow the app to toggle Wireless Debugging
-    adb shell pm grant dev.yamen.wirelessadb android.permission.WRITE_SECURE_SETTINGS
-
-    # Allow notifications (Android 13+)
-    adb shell pm grant dev.yamen.wirelessadb android.permission.POST_NOTIFICATIONS
-    ```
-
-7.  **Grant Extra Permissions (Full Command Set):**
-    While some are auto-granted, you can ensure all permissions are set using these commands:
-    ```bash
-    adb shell pm grant dev.yamen.wirelessadb android.permission.INTERNET
-    adb shell pm grant dev.yamen.wirelessadb android.permission.ACCESS_NETWORK_STATE
-    adb shell pm grant dev.yamen.wirelessadb android.permission.WRITE_SECURE_SETTINGS
-    adb shell pm grant dev.yamen.wirelessadb android.permission.POST_NOTIFICATIONS
-    ```
-
-## Configuration
-**Important:** The following values must be configured for your specific Home Assistant environment:
--   **Webhook URL:** Set via `WEBHOOK_URL` in `local.properties`.
--   **Device ID:** `ccwgt` (currently hardcoded in source)
-
-You will need to update `local.properties` with your Home Assistant instance's IP address and desired webhook ID.
-
-
-## Home Assistant Integration
-
-*(Important Note: If your Android TV device requires ADB pairing, you must also perform the `adb pair` command from the machine where your Home Assistant instance runs its ADB shell commands. This is typically a one-time setup.)*
-
-### 1. Webhook Automation
-Create an automation in HA to handle the incoming port and trigger a reconnection:
-```yaml
-alias: "Update ADB Port for TV"
-description: "Updates the ADB port when the WiFi Debug app reports a new one"
-trigger:
-  - platform: webhook
-    webhook_id: ccwgt_port
-    allowed_methods:
-      - POST
-    local_only: true
-action:
-  - service: shell_command.reconnect_adb_tv
-    data:
-      port: "{{ trigger.json.port }}"
-```
-
-### 2. Shell Command
-Add this to your `configuration.yaml`. This command sequence uses the random port reported by the app to establish a temporary ADB connection, then instructs the TV to restart its ADB daemon and listen on the standard port `5555` via `adb -s <TV_IP_ADDRESS>:{{ port }} tcpip 5555`.
-```yaml
-shell_command:
-  reconnect_adb_tv: "adb connect <TV_IP_ADDRESS>:{{ port }} && adb -s <TV_IP_ADDRESS>:{{ port }} tcpip 5555 && adb disconnect <TV_IP_ADDRESS>:{{ port }}"
-```
-*(Note: Ensure the `adb` binary is installed and available to the Home Assistant process/container)*
-
-### 3. Launch Script
-Add this to `scripts.yaml` to trigger the sync from your HA dashboard. This uses the `android_tv_remote` integration to start the application:
-```yaml
-local_wifi_debug_sync:
-  alias: "Wireless ADB Helper"
-  sequence:
-    - service: remote.turn_on
-      target:
-        entity_id: remote.steven_tv  # Entity from Android TV Remote integration
-      data:
-        activity: "dev.yamen.wirelessadb/.MainActivity"
-```
-
-## TODO
-- **Configuration Interface:** Replace hardcoded values with a user-friendly settings UI for Webhook URL and Device ID.
-- **App Visibility:** Fix the issue where the app does not appear in the standard launcher/app list (currently only visible under Settings -> Apps).
-- **Versioning & Signing:** Implement proper app versioning and automated signing for official releases.
+Based on [stevene1919/localwifidebug](https://github.com/stevene1919/localwifidebug)
+(MIT). Until version 1.1.1 the app was `com.enuff.localwifidebug` ("Local WiFi
+Debug Sync"). Since 2.0.0 it is `dev.yamen.wirelessadb`, signed with a different
+key, so updating from the old app means uninstalling it first. The old
+`localwifidebug://launch` link still works.
 
 ## License
-MIT
 
-## Disclaimer
-This project is provided "as is" without warranty of any kind. Feel free to use, modify, and distribute it. No formal support is offered, and your mileage may vary.
+MIT, see [LICENSE](LICENSE).
