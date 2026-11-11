@@ -1,6 +1,7 @@
 {
   "domain": "wireless_adb",
   "name": "Wireless ADB",
+  "categories": ["media_entertainment.tv_streaming"],
   "codeowners": ["@YamenSharaf"],
   "config_flow": true,
   "dependencies": ["zeroconf"],
