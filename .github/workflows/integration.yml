@@ -66,6 +66,41 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The release zip carries the newest helper app build so the
+      # integration can install and update it on the device (helper.py).
+      - name: Bundle the helper app
+        if: steps.ver.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APP_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name | startswith("app-v"))] | sort_by(.created_at) | last | .tag_name')
+          if [ -z "$APP_TAG" ] || [ "$APP_TAG" = "null" ]; then
+            echo "::error::No helper app release (app-v…) found to bundle"; exit 1
+          fi
+          # app-v<versionName>-<versionCode>
+          APP_NAME=$(echo "$APP_TAG" | sed -E 's/^app-v(.+)-([0-9]+)$/\1/')
+          APP_CODE=$(echo "$APP_TAG" | sed -E 's/^app-v(.+)-([0-9]+)$/\2/')
+          DIR=custom_components/wireless_adb/helper
+          mkdir -p "$DIR"
+          gh release download "$APP_TAG" --pattern '*.apk' --output "$DIR/wireless-adb-helper.apk"
+          SHA=$(sha256sum "$DIR/wireless-adb-helper.apk" | cut -d' ' -f1)
+          jq -n --arg name "$APP_NAME" --argjson code "$APP_CODE" --arg sha "$SHA" --arg tag "$APP_TAG" \
+            '{version_name: $name, version_code: $code, sha256: $sha, release: $tag}' > "$DIR/helper.json"
+          cat "$DIR/helper.json"
+          echo "app_tag=$APP_TAG" >> "$GITHUB_OUTPUT"
+        id: helper
+
+      # HACS installs from this zip (hacs.json: zip_release). It holds the
+      # integration folder's contents, not the folder itself.
+      - name: Build release zip
+        if: steps.ver.outputs.exists == 'false'
+        run: |
+          cd custom_components/wireless_adb
+          find . -name '__pycache__' -prune -exec rm -rf {} +
+          zip -r -X "$GITHUB_WORKSPACE/wireless_adb.zip" .
+          unzip -l "$GITHUB_WORKSPACE/wireless_adb.zip"
+
       # Integration releases are tagged v<version>; the helper app's builds
       # use app-v… prerelease tags and are left out of the notes.
       - name: Create release
@@ -84,6 +119,8 @@ jobs:
               echo
               echo "**Full diff:** https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...v${VERSION}"
             fi
+            echo
+            echo "Bundles helper app \`${{ steps.helper.outputs.app_tag }}\`."
           } > notes.md
           cat notes.md
 
@@ -95,4 +132,5 @@ jobs:
             --title "Wireless ADB $VERSION" \
             --target "$GITHUB_SHA" \
             --notes-file notes.md \
-            "${FLAGS[@]}"
+            "${FLAGS[@]}" \
+            wireless_adb.zip

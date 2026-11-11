@@ -3,7 +3,9 @@
     "abort": {
       "already_configured": "Device is already configured",
       "invalid_unique_id": "Could not read the device's serial number",
-      "not_wireless_debugging": "This is not a wireless debugging service"
+      "not_wireless_debugging": "This is not a wireless debugging service",
+      "reauth_successful": "Paired again. The connection is back.",
+      "wrong_device": "The device at this address is a different device than the one being re-paired."
     },
     "error": {
       "cannot_connect": "Could not open a wireless debugging session. If this Home Assistant has never been paired with the device, enter the pairing port and code.",
@@ -11,7 +13,9 @@
       "pairing_failed": "Pairing was rejected. Check the code, and keep the pairing dialog open on the device while you submit.",
       "pairing_port_required": "Enter the pairing port shown next to the code",
       "pairing_unreachable": "Could not reach the pairing port. Is the pairing dialog still open on the device?",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "helper_install_failed": "Installing the helper app failed (see the log). Untick the box to finish setup without it; you can install it later from its update entity.",
+      "pairing_code_required": "Enter the pairing code shown on the device"
     },
     "flow_title": "{name}",
     "step": {
@@ -34,6 +38,43 @@
         "data_description": {
           "host": "IP address or hostname of the Android TV. Wireless debugging must be turned on under Developer options."
         }
+      },
+      "helper": {
+        "title": "Install the helper app",
+        "description": "Android turns wireless debugging off whenever the device restarts. The Wireless ADB Helper app (version {version}) turns it back on at boot and every 15 minutes, so Home Assistant can always reach the device. Home Assistant installs it over the connection it just opened, grants it permission to change that setting, and keeps it updated.",
+        "data": {
+          "install_helper": "Install the helper app"
+        },
+        "data_description": {
+          "install_helper": "Recommended. Without it, wireless debugging stays off after every restart until someone turns it on by hand."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Pair {name} again",
+        "description": "{name} no longer accepts Home Assistant's key (this happens on some firmwares after a restart). On the device at {host}, open Developer options > Wireless debugging > Pair device with pairing code, then enter the port and code it shows.",
+        "data": {
+          "pairing_code": "Pairing code",
+          "pairing_port": "Pairing port"
+        },
+        "data_description": {
+          "pairing_code": "The six-digit Wi-Fi pairing code.",
+          "pairing_port": "The port after the colon in the IP address and port shown with the code."
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "ADB connection"
+      },
+      "pairing": {
+        "name": "Pairing"
+      }
+    },
+    "update": {
+      "helper": {
+        "name": "Helper app"
       }
     }
   },
@@ -64,7 +105,13 @@
           "screencap_interval": "Interval in minutes between screen capture for album art (set 0 to disable)",
           "state_detection_rules": "Configure state detection rules",
           "turn_off_command": "ADB shell turn off command (leave empty for default)",
-          "turn_on_command": "ADB shell turn on command (leave empty for default)"
+          "turn_on_command": "ADB shell turn on command (leave empty for default)",
+          "relaunch_helper": "Relaunch the helper app when the device is unreachable",
+          "relaunch_entity": "Android TV Remote entity to launch it with"
+        },
+        "data_description": {
+          "relaunch_helper": "If the TV is on but wireless debugging is off for 3 minutes, launch the helper through the Android TV Remote integration (which doesn't need ADB). Retried every 5 minutes.",
+          "relaunch_entity": "Leave empty to use the Android TV Remote entity on the same device."
         }
       },
       "rules": {

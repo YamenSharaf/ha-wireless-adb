@@ -1,4 +1,6 @@
 {
   "name": "Wireless ADB",
-  "homeassistant": "2026.11.0"
+  "homeassistant": "2026.11.0",
+  "zip_release": true,
+  "filename": "wireless_adb.zip"
 }

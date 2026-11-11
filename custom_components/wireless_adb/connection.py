@@ -4,13 +4,17 @@ Everything that differs from core `androidtv` in how we reach the device
 lives here, so the entity code stays close to upstream.
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from enum import StrEnum
 import logging
 import os
 import re
 import ssl
 from typing import Any
 
+from adb_shell_wifi.adb_device_async import AdbDeviceTlsAsync
 from adb_shell_wifi.auth.keygen import keygen
 from adb_shell_wifi.auth.x509 import (
     certificate_to_pem,
@@ -67,6 +71,18 @@ def _read_keypair(path: str) -> tuple[bytes, bytes]:
 async def async_ensure_adbkey(hass: HomeAssistant, path: str) -> None:
     """Generate the ADB key pair if it does not exist yet."""
     await hass.async_add_executor_job(_ensure_adbkey, path)
+
+
+def _remove_adbkey(path: str) -> None:
+    for file in (path, f"{path}.pub"):
+        with suppress(FileNotFoundError):
+            os.remove(file)
+
+
+async def async_remove_adbkey(hass: HomeAssistant, path: str) -> None:
+    """Delete the ADB key pair (devices paired with it must pair again)."""
+    _ssl_context_cache.clear()
+    await hass.async_add_executor_job(_remove_adbkey, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -197,3 +213,51 @@ async def async_connect(
         await aftv.get_device_properties()
         await aftv.get_installed_apps()
     return aftv
+
+
+# --------------------------------------------------------------------------- #
+# Probing: why did a connect fail?
+# --------------------------------------------------------------------------- #
+
+
+class ProbeResult(StrEnum):
+    """Outcome of a single diagnostic connect."""
+
+    OK = "ok"
+    UNREACHABLE = "unreachable"  # nothing accepts TCP on that port
+    REJECTED = "rejected"  # TCP works, but the TLS/ADB handshake fails
+
+
+async def async_probe(
+    hass: HomeAssistant, host: str, port: int, adbkey: str
+) -> ProbeResult:
+    """Classify a wireless-debugging endpoint with a throwaway session.
+
+    REJECTED is what a device that no longer trusts our key looks like, but a
+    single REJECTED isn't proof: right after wireless debugging starts, adbd
+    briefly rejects keys it will accept a moment later, and a stale port can
+    be reused by another service. Callers only act on repeated rejections at
+    the port the device currently advertises.
+    """
+    try:
+        async with asyncio.timeout(3):
+            _, writer = await asyncio.open_connection(host, port)
+    except (OSError, TimeoutError):
+        return ProbeResult.UNREACHABLE
+    writer.close()
+    with suppress(Exception):
+        await writer.wait_closed()
+
+    private_key = (await hass.async_add_executor_job(_read_keypair, adbkey))[0]
+    device = AdbDeviceTlsAsync(host, port, default_transport_timeout_s=5.0)
+    try:
+        connected = await device.connect(
+            rsa_keys=[], auth_timeout_s=5.0, tls_priv_pem=private_key
+        )
+    except Exception as err:  # noqa: BLE001 - any handshake failure counts
+        _LOGGER.debug("Probe of %s:%s failed: %r", host, port, err)
+        return ProbeResult.REJECTED
+    finally:
+        with suppress(Exception):
+            await device.close()
+    return ProbeResult.OK if connected else ProbeResult.REJECTED

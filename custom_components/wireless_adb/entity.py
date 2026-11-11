@@ -12,7 +12,7 @@ from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, Device
 from homeassistant.helpers.entity import Entity
 
 from . import ADB_PYTHON_EXCEPTIONS, WirelessAdbConfigEntry, get_androidtv_mac
-from .const import DOMAIN
+from .const import CONF_DEVICE_PROPERTIES, DOMAIN
 
 PREFIX_ANDROIDTV = "Android TV"
 
@@ -106,7 +106,10 @@ class WirelessAdbEntity(Entity):
         self._attr_unique_id = entry.unique_id
         self._entry_runtime_data = entry.runtime_data
 
-        info = self.aftv.device_properties
+        # Stored at the last successful connect, so the device can be set up
+        # while it's offline.
+        info = self.aftv.device_properties or entry.data.get(CONF_DEVICE_PROPERTIES, {})
+        self._attr_available = self.aftv.available
         model = info.get("model")
         self._attr_device_info = DeviceInfo(
             model=f"{model} ({PREFIX_ANDROIDTV})" if model else PREFIX_ANDROIDTV,

@@ -7,10 +7,12 @@ config entry.
 """
 
 import asyncio
+from collections.abc import Mapping
 import logging
 from typing import Any, override
 
 from androidtv_wifi import state_detection_rules_validator
+from androidtv_wifi.setup_async import AndroidTVAsync
 import probatio
 
 from homeassistant.config_entries import (
@@ -23,6 +25,8 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     ObjectSelector,
     SelectOptionDict,
     SelectSelector,
@@ -35,21 +39,27 @@ from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from .connection import PairingException, async_connect, async_pair, default_adbkey_path
 from .const import (
     CONF_APPS,
+    CONF_DEVICE_PROPERTIES,
     CONF_EXCLUDE_UNNAMED_APPS,
     CONF_GET_SOURCES,
+    CONF_INSTALL_HELPER,
     CONF_PAIRING_CODE,
     CONF_PAIRING_PORT,
+    CONF_RELAUNCH_ENTITY,
+    CONF_RELAUNCH_HELPER,
     CONF_SCREENCAP_INTERVAL,
     CONF_STATE_DETECTION_RULES,
     CONF_TURN_OFF_COMMAND,
     CONF_TURN_ON_COMMAND,
     DEFAULT_EXCLUDE_UNNAMED_APPS,
     DEFAULT_GET_SOURCES,
+    DEFAULT_RELAUNCH_HELPER,
     DEFAULT_SCREENCAP_INTERVAL,
     DOMAIN,
     PROP_SERIALNO,
 )
 from .discovery import async_find_connect_endpoint, serial_from_service_name
+from .helper import BundledHelper, async_get_bundled, async_get_installed, async_install
 
 APPS_NEW_ID = "NewApp"
 CONF_APP_DELETE = "app_delete"
@@ -67,6 +77,19 @@ RESULT_UNKNOWN = "unknown"
 CONNECT_ATTEMPTS = 3
 CONNECT_RETRY_DELAY_S = 2
 
+_PAIR_SCHEMA_OPTIONAL = probatio.Schema(
+    {
+        probatio.Optional(CONF_PAIRING_PORT): probatio.Port(),
+        probatio.Optional(CONF_PAIRING_CODE): TextSelector(),
+    }
+)
+_PAIR_SCHEMA_REQUIRED = probatio.Schema(
+    {
+        probatio.Required(CONF_PAIRING_PORT): probatio.Port(),
+        probatio.Required(CONF_PAIRING_CODE): TextSelector(),
+    }
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -79,6 +102,9 @@ class WirelessAdbFlowHandler(ConfigFlow, domain=DOMAIN):
         """Initialize the flow."""
         self._host: str | None = None
         self._port: int | None = None  # TLS port, when known from zeroconf
+        self._aftv: AndroidTVAsync | None = None  # open session, setup only
+        self._title: str | None = None
+        self._bundled: BundledHelper | None = None
 
     @override
     async def async_step_user(
@@ -132,39 +158,9 @@ class WirelessAdbFlowHandler(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            adbkey = default_adbkey_path(self.hass)
-            code = (user_input.get(CONF_PAIRING_CODE) or "").strip()
-            pairing_port = user_input.get(CONF_PAIRING_PORT)
-
-            # Pairing is optional: leave the code empty if this Home
-            # Assistant is already paired (e.g. after removing the entry).
-            if code:
-                if not pairing_port:
-                    errors[CONF_PAIRING_PORT] = "pairing_port_required"
-                else:
-                    try:
-                        await async_pair(
-                            self.hass, self._host, int(pairing_port), code, adbkey
-                        )
-                    except PairingException as err:
-                        _LOGGER.warning("Pairing with %s failed: %s", self._host, err)
-                        errors["base"] = "pairing_failed"
-                    except OSError as err:
-                        _LOGGER.warning(
-                            "Could not reach the pairing port %s:%s: %s",
-                            self._host,
-                            pairing_port,
-                            err,
-                        )
-                        errors["base"] = "pairing_unreachable"
-                    except Exception:
-                        _LOGGER.exception(
-                            "Unexpected error pairing with %s", self._host
-                        )
-                        errors["base"] = RESULT_UNKNOWN
-
+            errors = await self._async_pair(user_input, code_required=False)
             if not errors:
-                result = await self._async_connect_and_create(adbkey)
+                result = await self._async_connect_and_create()
                 if isinstance(result, str):
                     errors["base"] = result
                 else:
@@ -172,25 +168,131 @@ class WirelessAdbFlowHandler(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="pair",
-            data_schema=probatio.Schema(
-                {
-                    probatio.Optional(CONF_PAIRING_PORT): probatio.Port(),
-                    probatio.Optional(CONF_PAIRING_CODE): TextSelector(),
-                }
-            ),
+            data_schema=_PAIR_SCHEMA_OPTIONAL,
             description_placeholders={"host": self._host},
             errors=errors,
         )
 
-    async def _async_connect_and_create(self, adbkey: str) -> ConfigFlowResult | str:
-        """Connect over TLS and create the entry, or return an error key."""
-        assert self._host is not None
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """The device stopped accepting our key: pair it again."""
+        self._host = entry_data[CONF_HOST]
+        return await self.async_step_reauth_confirm()
 
-        # Opening the pairing dialog restarts wireless debugging on a new
-        # port, so a port remembered from discovery is often stale by now.
-        # Try it once, then look the current port up (a few times, since the
-        # new advertisement can lag the dialog).
-        aftv = None
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for a new pairing code."""
+        assert self._host is not None
+        entry = self._get_reauth_entry()
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            errors = await self._async_pair(user_input, code_required=True)
+            if not errors:
+                aftv, port = await self._async_open_session()
+                if aftv is None:
+                    errors["base"] = "not_advertised"
+                elif not aftv.available:
+                    errors["base"] = RESULT_CONN_ERROR
+                else:
+                    props = dict(aftv.device_properties)
+                    await aftv.adb_close()
+                    if props.get(PROP_SERIALNO) not in (None, entry.unique_id):
+                        return self.async_abort(reason="wrong_device")
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data_updates={
+                            CONF_HOST: self._host,
+                            CONF_PORT: port,
+                            CONF_DEVICE_PROPERTIES: props,
+                        },
+                    )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=_PAIR_SCHEMA_REQUIRED,
+            description_placeholders={"host": self._host, "name": entry.title},
+            errors=errors,
+        )
+
+    async def async_step_helper(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Offer to install (or update) the helper app, then create the entry."""
+        assert self._aftv is not None and self._bundled is not None
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            if not user_input.get(CONF_INSTALL_HELPER):
+                return await self._async_create_entry()
+            try:
+                await async_install(self._aftv, self._bundled)
+            except Exception as err:  # noqa: BLE001 - shown to the user, can be skipped
+                _LOGGER.warning("Installing the helper app failed: %s", err)
+                errors["base"] = "helper_install_failed"
+            else:
+                return await self._async_create_entry()
+
+        return self.async_show_form(
+            step_id="helper",
+            data_schema=probatio.Schema(
+                {probatio.Required(CONF_INSTALL_HELPER, default=True): bool}
+            ),
+            description_placeholders={"version": str(self._bundled.version)},
+            errors=errors,
+        )
+
+    async def _async_pair(
+        self, user_input: dict[str, Any], *, code_required: bool
+    ) -> dict[str, str]:
+        """Pair if a code was given; return form errors."""
+        assert self._host is not None
+        code = (user_input.get(CONF_PAIRING_CODE) or "").strip()
+        pairing_port = user_input.get(CONF_PAIRING_PORT)
+
+        # During setup pairing is optional: leave the code empty if this Home
+        # Assistant is already paired. Re-authentication always needs it.
+        if not code:
+            return {CONF_PAIRING_CODE: "pairing_code_required"} if code_required else {}
+        if not pairing_port:
+            return {CONF_PAIRING_PORT: "pairing_port_required"}
+        try:
+            await async_pair(
+                self.hass,
+                self._host,
+                int(pairing_port),
+                code,
+                default_adbkey_path(self.hass),
+            )
+        except PairingException as err:
+            _LOGGER.warning("Pairing with %s failed: %s", self._host, err)
+            return {"base": "pairing_failed"}
+        except OSError as err:
+            _LOGGER.warning(
+                "Could not reach the pairing port %s:%s: %s",
+                self._host,
+                pairing_port,
+                err,
+            )
+            return {"base": "pairing_unreachable"}
+        except Exception:
+            _LOGGER.exception("Unexpected error pairing with %s", self._host)
+            return {"base": RESULT_UNKNOWN}
+        return {}
+
+    async def _async_open_session(self) -> tuple[AndroidTVAsync | None, int | None]:
+        """Connect over TLS; returns (session or None if never advertised, port).
+
+        Opening the pairing dialog restarts wireless debugging on a new port,
+        so a port remembered from discovery is often stale by now. Try it once,
+        then look the current port up (a few times, since the new
+        advertisement can lag the dialog).
+        """
+        assert self._host is not None
+        adbkey = default_adbkey_path(self.hass)
+        aftv: AndroidTVAsync | None = None
         port = self._port
         for attempt in range(CONNECT_ATTEMPTS):
             if port is None:
@@ -199,45 +301,91 @@ class WirelessAdbFlowHandler(ConfigFlow, domain=DOMAIN):
                     await asyncio.sleep(CONNECT_RETRY_DELAY_S)
                     continue
                 port = found[1]
-            try:
-                aftv = await async_connect(self.hass, self._host, port, adbkey)
-            except Exception:
-                _LOGGER.exception(
-                    "Unexpected error connecting to %s:%s", self._host, port
-                )
-                return RESULT_UNKNOWN
+            aftv = await async_connect(self.hass, self._host, port, adbkey)
             if aftv.available:
-                break
+                return aftv, port
             _LOGGER.debug(
                 "Attempt %s: no session on %s:%s", attempt + 1, self._host, port
             )
             port = None
             await asyncio.sleep(CONNECT_RETRY_DELAY_S)
+        return aftv, port
 
+    async def _async_connect_and_create(self) -> ConfigFlowResult | str:
+        """Connect over TLS, then offer the helper or create the entry.
+
+        Returns an error key for the form on failure.
+        """
+        assert self._host is not None
+        try:
+            aftv, port = await self._async_open_session()
+        except Exception:
+            _LOGGER.exception("Unexpected error connecting to %s", self._host)
+            return RESULT_UNKNOWN
         if aftv is None:
             return "not_advertised"
         if not aftv.available:
             return RESULT_CONN_ERROR
 
-        props = aftv.device_properties
-        await aftv.adb_close()
-
+        props = dict(aftv.device_properties)
         serial = props.get(PROP_SERIALNO)
         if not serial:
+            await aftv.adb_close()
             return self.async_abort(reason="invalid_unique_id")
 
         await self.async_set_unique_id(serial, raise_on_progress=False)
+        if any(entry.unique_id == serial for entry in self._async_current_entries()):
+            await aftv.adb_close()  # about to abort as already configured
         self._abort_if_unique_id_configured(
             updates={CONF_HOST: self._host, CONF_PORT: port}
         )
 
-        title = " ".join(
-            part for part in (props.get("manufacturer"), props.get("model")) if part
+        self._aftv, self._port = aftv, port
+        self._title = (
+            " ".join(
+                part for part in (props.get("manufacturer"), props.get("model")) if part
+            )
+            or self._host
         )
+
+        # Offer the helper app if it's missing, outdated or lacks its grant.
+        self._bundled = await async_get_bundled(self.hass)
+        if self._bundled is not None:
+            try:
+                installed = await async_get_installed(aftv)
+            except Exception as err:  # noqa: BLE001 - not worth failing setup over
+                _LOGGER.debug("Could not read the helper state: %r", err)
+            else:
+                if (
+                    installed.version is None
+                    or installed.version.code < self._bundled.version.code
+                    or not installed.granted
+                ):
+                    return await self.async_step_helper()
+        return await self._async_create_entry()
+
+    async def _async_create_entry(self) -> ConfigFlowResult:
+        """Close the setup session and create the entry."""
+        assert self._aftv is not None and self._title is not None
+        props = dict(self._aftv.device_properties)
+        await self._aftv.adb_close()
+        self._aftv = None
         return self.async_create_entry(
-            title=title or self._host,
-            data={CONF_HOST: self._host, CONF_PORT: port},
+            title=self._title,
+            data={
+                CONF_HOST: self._host,
+                CONF_PORT: self._port,
+                CONF_DEVICE_PROPERTIES: props,
+            },
         )
+
+    @callback
+    @override
+    def async_remove(self) -> None:
+        """Close a session left open by an abandoned flow."""
+        if self._aftv is not None:
+            self.hass.async_create_task(self._aftv.adb_close())
+            self._aftv = None
 
     @staticmethod
     @callback
@@ -336,6 +484,14 @@ class OptionsFlowHandler(OptionsFlow):
                         options=rules, mode=SelectSelectorMode.DROPDOWN
                     )
                 ),
+                probatio.Optional(
+                    CONF_RELAUNCH_HELPER,
+                    default=options.get(CONF_RELAUNCH_HELPER, DEFAULT_RELAUNCH_HELPER),
+                ): bool,
+                probatio.Optional(
+                    CONF_RELAUNCH_ENTITY,
+                    description={"suggested_value": options.get(CONF_RELAUNCH_ENTITY)},
+                ): EntitySelector(EntitySelectorConfig(domain="remote")),
             }
         )
 

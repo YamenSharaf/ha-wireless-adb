@@ -1,4 +1,11 @@
 {
+  "entity": {
+    "update": {
+      "helper": {
+        "default": "mdi:android"
+      }
+    }
+  },
   "services": {
     "adb_command": {
       "service": "mdi:console"

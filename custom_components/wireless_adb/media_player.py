@@ -20,7 +20,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util.dt import utcnow
 
-from . import WirelessAdbConfigEntry, async_refresh_endpoint
+from . import WirelessAdbConfigEntry
 from .const import (
     CONF_APPS,
     CONF_EXCLUDE_UNNAMED_APPS,
@@ -38,9 +38,10 @@ from .services import ATTR_ADB_RESPONSE, ATTR_HDMI_INPUT
 
 _LOGGER = logging.getLogger(__name__)
 
-# While disconnected, look the device up over mDNS on the 1st, 7th, 13th...
-# failed connect (polling runs every 10 s, so about once a minute).
-ENDPOINT_REFRESH_EVERY = 6
+# While disconnected, run a health check (mDNS lookup, pairing check, helper
+# relaunch; see health.py) on the 1st, 7th, 13th... failed connect. Polling
+# runs every 10 s, so that's about once a minute.
+HEALTH_CHECK_EVERY = 6
 
 # Translate from `AndroidTV` / `FireTV` reported state to HA state.
 ANDROIDTV_STATES = {
@@ -330,18 +331,22 @@ class AndroidTVDevice(ADBDevice):
         # Check if device is disconnected.
         if not self._attr_available:
             # Try to connect
+            health = self._entry_runtime_data.health
             if await self.aftv.adb_connect(log_errors=self._failed_connect_count == 0):
                 self._failed_connect_count = 0
                 self._attr_available = True
+                if not self.aftv.device_properties:
+                    # Set up while the device was offline: androidtv picks its
+                    # commands by Android version, so load the properties now.
+                    await self.aftv.get_device_properties()
+                health.async_connected()
             else:
                 self._failed_connect_count += 1
-                if self._failed_connect_count % ENDPOINT_REFRESH_EVERY == 1:
-                    # The port rotates when adbd restarts. Zeroconf discovery
-                    # usually catches that; this is the fallback. A changed
-                    # endpoint reloads the entry (see update_listener).
+                health.async_disconnected()
+                if self._failed_connect_count % HEALTH_CHECK_EVERY == 1:
                     self.hass.async_create_background_task(
-                        async_refresh_endpoint(self.hass, self._entry),
-                        f"wireless_adb refresh endpoint {self._entry.entry_id}",
+                        health.async_check(),
+                        f"wireless_adb health check {self._entry.entry_id}",
                     )
 
         # If the ADB connection is not intact, don't update.

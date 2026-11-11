@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .venv/
+
+# Filled with the helper APK by the release workflow (see integration.yml)
+custom_components/wireless_adb/helper/
