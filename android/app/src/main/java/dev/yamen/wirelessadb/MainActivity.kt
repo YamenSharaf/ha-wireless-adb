@@ -31,6 +31,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "Headless launch -> enqueuing SyncWorker")
         SyncWorker.enqueue(applicationContext)
+        WatchdogWorker.schedule(applicationContext)
         finish()
         // Belt-and-suspenders: kill any close transition (theme already disables
         // window animation) so nothing paints a stray frame on this

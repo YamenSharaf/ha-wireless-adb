@@ -45,7 +45,11 @@ android {
     buildTypes {
         release {
             signingConfig releaseKeystore.exists() ? signingConfigs.release : signingConfigs.debug
-            minifyEnabled false
+            // R8: the app is a few hundred lines; without shrinking the APK is
+            // ~12 MB of unused library code, and it ships inside every
+            // integration release.
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
@@ -67,12 +71,7 @@ android {
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
-    implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'com.google.android.material:material:1.10.0'
-    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'com.squareup.okhttp3:okhttp:4.11.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1'
-    implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2'
-    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.2'
     implementation 'androidx.work:work-runtime-ktx:2.9.0'
 }

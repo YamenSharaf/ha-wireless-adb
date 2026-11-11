@@ -17,6 +17,9 @@ The helper does exactly that:
 - **When launched** (from the TV, over ADB, or from Home Assistant through the
   [Android TV Remote](https://www.home-assistant.io/integrations/androidtv_remote/)
   integration with the link `wirelessadb://launch`), it does the same.
+- **Every 15 minutes** a watchdog checks the setting and turns it back on if
+  something switched it off. To turn wireless debugging off for good, disable or
+  uninstall the helper first.
 
 It shows no window and leaves nothing in recents. Finding the (random,
 rotating) wireless-debugging port is the integration's job: the TV advertises it

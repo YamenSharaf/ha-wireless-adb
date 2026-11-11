@@ -25,7 +25,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.AppCompat.Light.DarkActionBar"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
         tools:targetApi="31">
         <!-- Headless launcher (phase b): invisible window, finishes in onCreate,
              enqueues the same SyncWorker as the boot path. noHistory +

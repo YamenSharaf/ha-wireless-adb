@@ -20,6 +20,8 @@ in [README.md](README.md).
 
 - Package / namespace: `dev.yamen.wirelessadb`; label "Wireless ADB Helper".
 - `minSdk 30` (wireless debugging needs Android 11), `targetSdk 34`.
+- Release builds are shrunk with R8 (`minifyEnabled`, `shrinkResources`); the
+  app has no UI, so there's no AppCompat/Material dependency.
 - Entry points:
   - `BootReceiver` (`BOOT_COMPLETED`): enqueues the sync at boot.
   - `MainActivity`: invisible launcher (`Theme.Invisible` with
@@ -28,6 +30,10 @@ in [README.md](README.md).
     from the launcher, `adb shell monkey`, and the app links
     `wirelessadb://launch` and (legacy) `localwifidebug://launch`.
   - `ConfigReceiver`: optional webhook setting, see below.
+  - `WatchdogWorker`: periodic (15 min, WorkManager minimum) unique work,
+    scheduled from boot and every launch (`ExistingPeriodicWorkPolicy.UPDATE`).
+    Turns `adb_wifi_enabled` back on if it's off; with a webhook configured it
+    enqueues `SyncWorker` instead so the new port is reported.
 - Logcat tags: `WiFiDebugWorker`, `WiFiDebugActivity`, `WiFiDebugBoot`,
   `WirelessAdbConfig`. Some vendor builds (e.g. Sony Bravia, Android 14) drop
   third-party app logs, so don't rely on logcat to confirm behaviour.

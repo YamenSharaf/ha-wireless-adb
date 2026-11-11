@@ -25,6 +25,7 @@ class BootReceiver : BroadcastReceiver() {
         ) {
             Log.d(TAG, "Boot received ($action) -> enqueuing SyncWorker")
             SyncWorker.enqueue(context.applicationContext)
+            WatchdogWorker.schedule(context.applicationContext)
         }
     }
 
