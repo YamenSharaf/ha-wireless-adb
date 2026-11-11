@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Same artwork as the integration icon (assets/icon.svg in the repo root). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <group
+        android:pivotX="256"
+        android:pivotY="235"
+        android:scaleX="0.5"
+        android:scaleY="0.5"
+        android:translateY="21">
+        <path
+            android:pathData="M196,92 A84,84 0 0,1 316,92"
+            android:strokeColor="@color/wireless_adb_green"
+            android:strokeWidth="26"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M150,58 A148,148 0 0,1 362,58"
+            android:strokeColor="@color/wireless_adb_green"
+            android:strokeWidth="26"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M239,128 A17,17 0 1,0 273,128 A17,17 0 1,0 239,128 Z"
+            android:fillColor="@color/wireless_adb_green" />
+        <path
+            android:pathData="M84,160 H428 A44,44 0 0 1 472,204 V388 A44,44 0 0 1 428,432 H84 A44,44 0 0 1 40,388 V204 A44,44 0 0 1 84,160 Z"
+            android:fillColor="@color/wireless_adb_green" />
+        <path
+            android:pathData="M92,190 H420 A22,22 0 0 1 442,212 V380 A22,22 0 0 1 420,402 H92 A22,22 0 0 1 70,380 V212 A22,22 0 0 1 92,190 Z"
+            android:fillColor="@color/wireless_adb_navy" />
+        <path
+            android:pathData="M136,252 L196,296 L136,340"
+            android:strokeColor="@color/wireless_adb_green"
+            android:strokeWidth="28"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M235,322 H305 A13,13 0 0 1 318,335 V335 A13,13 0 0 1 305,348 H235 A13,13 0 0 1 222,335 V335 A13,13 0 0 1 235,322 Z"
+            android:fillColor="@color/wireless_adb_green" />
+        <path
+            android:pathData="M199,444 H313 A13,13 0 0 1 326,457 V457 A13,13 0 0 1 313,470 H199 A13,13 0 0 1 186,457 V457 A13,13 0 0 1 199,444 Z"
+            android:fillColor="@color/wireless_adb_green" />
+    </group>
+</vector>

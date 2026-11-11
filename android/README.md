@@ -1,8 +1,8 @@
-# Local WiFi Debug Sync
+# Wireless ADB Helper
 
 Upstream Repo: https://github.com/stevene1919/localwifidebug
 
-**Local WiFi Debug Sync** is a specialized Android application (Kotlin) designed to automate the synchronization of the **Wireless Debugging** port on Android TV devices (like Chromecast with Google TV) with **Home Assistant**.
+**Wireless ADB Helper** is a specialized Android application (Kotlin) designed to automate the synchronization of the **Wireless Debugging** port on Android TV devices (like Chromecast with Google TV) with **Home Assistant**.
 
 ## Why this exists
 The [Android Debug Bridge (ADB) Integration](https://www.home-assistant.io/integrations/androidtv/) in Home Assistant often loses connection because:
@@ -115,19 +115,19 @@ This section details the one-time setup required on your Android TV device to en
     Run these commands via ADB to grant the necessary secure permissions declared in the manifest (`WRITE_SECURE_SETTINGS` and `POST_NOTIFICATIONS`):
     ```bash
     # Allow the app to toggle Wireless Debugging
-    adb shell pm grant com.enuff.localwifidebug android.permission.WRITE_SECURE_SETTINGS
+    adb shell pm grant dev.yamen.wirelessadb android.permission.WRITE_SECURE_SETTINGS
 
     # Allow notifications (Android 13+)
-    adb shell pm grant com.enuff.localwifidebug android.permission.POST_NOTIFICATIONS
+    adb shell pm grant dev.yamen.wirelessadb android.permission.POST_NOTIFICATIONS
     ```
 
 7.  **Grant Extra Permissions (Full Command Set):**
     While some are auto-granted, you can ensure all permissions are set using these commands:
     ```bash
-    adb shell pm grant com.enuff.localwifidebug android.permission.INTERNET
-    adb shell pm grant com.enuff.localwifidebug android.permission.ACCESS_NETWORK_STATE
-    adb shell pm grant com.enuff.localwifidebug android.permission.WRITE_SECURE_SETTINGS
-    adb shell pm grant com.enuff.localwifidebug android.permission.POST_NOTIFICATIONS
+    adb shell pm grant dev.yamen.wirelessadb android.permission.INTERNET
+    adb shell pm grant dev.yamen.wirelessadb android.permission.ACCESS_NETWORK_STATE
+    adb shell pm grant dev.yamen.wirelessadb android.permission.WRITE_SECURE_SETTINGS
+    adb shell pm grant dev.yamen.wirelessadb android.permission.POST_NOTIFICATIONS
     ```
 
 ## Configuration
@@ -171,13 +171,13 @@ shell_command:
 Add this to `scripts.yaml` to trigger the sync from your HA dashboard. This uses the `android_tv_remote` integration to start the application:
 ```yaml
 local_wifi_debug_sync:
-  alias: "Local WiFi Debug Sync"
+  alias: "Wireless ADB Helper"
   sequence:
     - service: remote.turn_on
       target:
         entity_id: remote.steven_tv  # Entity from Android TV Remote integration
       data:
-        activity: "com.enuff.localwifidebug/.MainActivity"
+        activity: "dev.yamen.wirelessadb/.MainActivity"
 ```
 
 ## TODO

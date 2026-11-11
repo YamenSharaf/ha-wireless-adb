@@ -1,4 +1,4 @@
-package com.enuff.localwifidebug
+package dev.yamen.wirelessadb
 
 import android.app.Activity
 import android.os.Bundle
@@ -18,10 +18,11 @@ import android.util.Log
  * launch and ADB `monkey` continue to work unchanged, and so launching also
  * pulls the app out of Android's "stopped state" (re-arming BOOT_COMPLETED).
  *
- * A third entry point, the app link `localwifidebug://launch`, reaches the same
+ * A third entry point, the app link `wirelessadb://launch`, reaches the same
  * onCreate. HA should launch with that link: a bare package name becomes
  * `market://launch?id=...`, which stopped resolving on the Bravia after the
- * Play Store update of ~2026-10-20.
+ * Play Store update of ~2026-10-20. The old `localwifidebug://launch` link
+ * (from before the app was renamed) is still accepted for existing automations.
  */
 class MainActivity : Activity() {
 

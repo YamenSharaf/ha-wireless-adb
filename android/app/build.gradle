@@ -10,11 +10,11 @@ if (localPropertiesFile.exists()) {
 }
 
 android {
-    namespace 'com.enuff.localwifidebug'
+    namespace 'dev.yamen.wirelessadb'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.enuff.localwifidebug"
+        applicationId "dev.yamen.wirelessadb"
         minSdk 30
         targetSdk 34
         versionCode APP_VERSION_CODE.toInteger()

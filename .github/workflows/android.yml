@@ -29,9 +29,10 @@ permissions:
   contents: write
 
 env:
-  # versionCode = run number + offset. Run numbers restarted at 1 when the
-  # app moved out of the localwifidebug repo, whose last build was
-  # versionCode 7; the offset keeps every new build an in-place upgrade.
+  # versionCode = run number + offset. The offset dates from the move out of
+  # the localwifidebug repo (whose builds reached versionCode 7); since the
+  # rename to dev.yamen.wirelessadb it's no longer needed, but changing it
+  # would make later builds look like downgrades, so it stays.
   VERSION_CODE_OFFSET: 100
 
 jobs:
@@ -81,7 +82,7 @@ jobs:
           DEVICE_ID=${DEVICE_ID}
           RELEASE_STORE_PASSWORD=${KEYSTORE_PASSWORD}
           RELEASE_KEY_PASSWORD=${KEYSTORE_PASSWORD}
-          RELEASE_KEY_ALIAS=localwifidebug
+          RELEASE_KEY_ALIAS=wirelessadb
           PROPS
           echo "--- webhook (shown for verification) ---"
           grep WEBHOOK_URL local.properties

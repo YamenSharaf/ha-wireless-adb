@@ -7,4 +7,7 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- Wireless ADB brand colours (same as the integration icon) -->
+    <color name="wireless_adb_green">#FF3DDC84</color>
+    <color name="wireless_adb_navy">#FF073042</color>
 </resources>

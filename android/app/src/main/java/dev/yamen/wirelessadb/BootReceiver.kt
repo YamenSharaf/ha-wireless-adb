@@ -1,4 +1,4 @@
-package com.enuff.localwifidebug
+package dev.yamen.wirelessadb
 
 import android.content.BroadcastReceiver
 import android.content.Context

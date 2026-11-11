@@ -1,4 +1,4 @@
-package com.enuff.localwifidebug
+package dev.yamen.wirelessadb
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -337,7 +337,7 @@ class SyncWorker(
     companion object {
         private const val TAG = "WiFiDebugWorker"
         private const val UNIQUE_NAME = "wifi_debug_sync"
-        private const val PACKAGE = "com.enuff.localwifidebug"
+        private val PACKAGE: String = BuildConfig.APPLICATION_ID
         const val KEY_ENQUEUE_TS = "enqueue_ts"
 
         private const val SERVICE_TYPE = "_adb-tls-connect._tcp."
