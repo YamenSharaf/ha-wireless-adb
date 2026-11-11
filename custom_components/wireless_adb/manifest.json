@@ -11,6 +11,6 @@
   "issue_tracker": "https://github.com/YamenSharaf/ha-wireless-adb/issues",
   "loggers": ["adb_shell_wifi", "androidtv_wifi"],
   "requirements": ["androidtv-wifi[async,wifi]==0.1.1"],
-  "version": "0.2.0",
+  "version": "0.3.0",
   "zeroconf": ["_adb-tls-connect._tcp.local."]
 }

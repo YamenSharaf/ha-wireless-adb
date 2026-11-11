@@ -111,7 +111,8 @@ class HelperUpdateEntity(WirelessAdbEntity, UpdateEntity):
 
     async def async_update(self) -> None:
         """Read the helper's state from the device; re-grant if needed."""
-        if not self._health.connected:
+        if not (self._health.connected and self.aftv.available):
+            # Also skips the closing session of an entry that's reloading.
             return
         try:
             installed = await async_get_installed(self.aftv)

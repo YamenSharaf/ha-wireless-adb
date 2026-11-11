@@ -9,6 +9,7 @@ CONF_EXCLUDE_UNNAMED_APPS = "exclude_unnamed_apps"
 CONF_GET_SOURCES = "get_sources"
 CONF_PAIRING_CODE = "pairing_code"
 CONF_INSTALL_HELPER = "install_helper"
+CONF_KEEP_PAIRING = "keep_pairing"
 CONF_PAIRING_PORT = "pairing_port"
 CONF_RELAUNCH_ENTITY = "relaunch_entity"
 CONF_RELAUNCH_HELPER = "relaunch_helper"
@@ -20,11 +21,15 @@ CONF_TURN_ON_COMMAND = "turn_on_command"
 
 DEFAULT_EXCLUDE_UNNAMED_APPS = False
 DEFAULT_GET_SOURCES = True
+DEFAULT_KEEP_PAIRING = True
 DEFAULT_RELAUNCH_HELPER = True
 DEFAULT_SCREENCAP_INTERVAL = 5
 
 # The integration's own ADB key, generated on first use and kept in .storage.
 ADBKEY_FILENAME = "wireless_adb_adbkey"
+# Shown as the paired device's name on the TV (no spaces: the public key
+# file is "<base64> <name>").
+ADBKEY_NAME = "HomeAssistant@WirelessADB"
 
 # Wireless debugging advertises its (rotating) TLS port as this mDNS service.
 # Instance names look like "adb-<serial>-<random>".

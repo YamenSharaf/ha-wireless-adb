@@ -33,6 +33,7 @@ from homeassistant.helpers.typing import ConfigType
 from .connection import (
     ProbeResult,
     async_connect,
+    async_disable_authorization_timeout,
     async_probe,
     async_remove_adbkey,
     default_adbkey_path,
@@ -40,7 +41,9 @@ from .connection import (
 from .const import (
     CONF_ADBKEY,
     CONF_DEVICE_PROPERTIES,
+    CONF_KEEP_PAIRING,
     CONF_STATE_DETECTION_RULES,
+    DEFAULT_KEEP_PAIRING,
     DOMAIN,
     PROP_ETHMAC,
     PROP_WIFIMAC,
@@ -86,6 +89,9 @@ class WirelessAdbRuntimeData:
     dev_opt: dict[str, Any]
     health: ConnectionHealth
     bundled_helper: BundledHelper | None
+    # Device settings applied over the current session (see
+    # async_apply_device_settings); reset when the entry reloads.
+    device_settings_applied: bool = False
 
 
 WirelessAdbConfigEntry = ConfigEntry[WirelessAdbRuntimeData]
@@ -104,6 +110,25 @@ def get_androidtv_mac(dev_props: dict[str, Any]) -> str | None:
 def entry_adbkey(hass: HomeAssistant, entry: ConfigEntry) -> str:
     """Return the ADB key path used by a config entry."""
     return entry.data.get(CONF_ADBKEY) or default_adbkey_path(hass)
+
+
+async def async_apply_device_settings(entry: "WirelessAdbConfigEntry") -> None:
+    """Apply settings that keep the device reachable; once per session.
+
+    Called when a session is (re)established. Errors are logged, not raised:
+    this is housekeeping, not a reason to drop the connection.
+    """
+    runtime = entry.runtime_data
+    if runtime.device_settings_applied:
+        return
+    runtime.device_settings_applied = True
+    if not entry.options.get(CONF_KEEP_PAIRING, DEFAULT_KEEP_PAIRING):
+        return
+    try:
+        await async_disable_authorization_timeout(runtime.aftv)
+    except Exception as err:  # noqa: BLE001
+        runtime.device_settings_applied = False  # try again next session
+        _LOGGER.debug("Could not apply device settings: %r", err)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -210,6 +235,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: WirelessAdbConfigEntry) 
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    if aftv.available:
+        await async_apply_device_settings(entry)
     return True
 
 
@@ -262,5 +289,11 @@ async def update_listener(hass: HomeAssistant, entry: WirelessAdbConfigEntry) ->
         await hass.config_entries.async_reload(entry.entry_id)
         return
 
+    keep_pairing_turned_on = entry.options.get(
+        CONF_KEEP_PAIRING, DEFAULT_KEEP_PAIRING
+    ) and not old_options.get(CONF_KEEP_PAIRING, DEFAULT_KEEP_PAIRING)
     entry.runtime_data.dev_opt = entry.options.copy()
+    if keep_pairing_turned_on and entry.runtime_data.aftv.available:
+        entry.runtime_data.device_settings_applied = False
+        await async_apply_device_settings(entry)
     async_dispatcher_send(hass, f"{SIGNAL_CONFIG_ENTITY}_{entry.entry_id}")

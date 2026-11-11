@@ -29,7 +29,7 @@ from androidtv_wifi.setup_async import AndroidTVAsync
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import STORAGE_DIR
 
-from .const import ADBKEY_FILENAME
+from .const import ADBKEY_FILENAME, ADBKEY_NAME
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,10 +54,25 @@ def _ensure_adbkey(path: str) -> None:
     if not os.path.isfile(path):
         _LOGGER.info("Generating a new ADB key at %s", path)
         keygen(path)
+    _ensure_key_name(f"{path}.pub")
     # Anyone holding the private key can act as this Home Assistant on every
     # paired device, so keep it readable by Home Assistant only.
     if os.stat(path).st_mode & 0o077:
         os.chmod(path, 0o600)
+
+
+def _ensure_key_name(pub_path: str) -> None:
+    """Name the key "HomeAssistant@WirelessADB" instead of "<user>@<host>".
+
+    The TV lists paired devices by this name, and inside the Home Assistant
+    container keygen's default comes out as "unknown@homeassistant". The name
+    is sent when pairing, so a changed name shows up after the next pairing.
+    """
+    with open(pub_path, encoding="ascii") as f:
+        key, _, name = f.read().strip().partition(" ")
+    if name != ADBKEY_NAME:
+        with open(pub_path, "w", encoding="ascii") as f:
+            f.write(f"{key} {ADBKEY_NAME}")
 
 
 def _read_keypair(path: str) -> tuple[bytes, bytes]:
@@ -261,3 +276,28 @@ async def async_probe(
         with suppress(Exception):
             await device.close()
     return ProbeResult.OK if connected else ProbeResult.REJECTED
+
+
+# --------------------------------------------------------------------------- #
+# Keeping the pairing
+# --------------------------------------------------------------------------- #
+
+# Android revokes ADB keys that haven't connected for this long (default 7
+# days; Developer options > "Disable ADB authorization timeout" sets it to 0).
+ADB_ALLOWED_CONNECTION_TIME = "adb_allowed_connection_time"
+
+
+async def async_disable_authorization_timeout(aftv: AndroidTVAsync) -> bool:
+    """Make the device keep its ADB authorizations; True if it changed."""
+    current = (
+        await aftv.adb_shell(f"settings get global {ADB_ALLOWED_CONNECTION_TIME}") or ""
+    ).strip()
+    if current == "0":
+        return False
+    await aftv.adb_shell(f"settings put global {ADB_ALLOWED_CONNECTION_TIME} 0")
+    _LOGGER.info(
+        "Disabled the ADB authorization timeout on %s (was %s)",
+        aftv.host,
+        current or "default, 7 days",
+    )
+    return True

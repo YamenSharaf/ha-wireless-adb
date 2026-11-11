@@ -15,7 +15,8 @@
       "pairing_unreachable": "Could not reach the pairing port. Is the pairing dialog still open on the device?",
       "unknown": "Unexpected error",
       "helper_install_failed": "Installing the helper app failed (see the log). Untick the box to finish setup without it; you can install it later from its update entity.",
-      "pairing_code_required": "Enter the pairing code shown on the device"
+      "pairing_code_required": "Enter the pairing code shown on the device",
+      "invalid_pairing_code": "The pairing code is the six digits shown on the device"
     },
     "flow_title": "{name}",
     "step": {
@@ -107,11 +108,13 @@
           "turn_off_command": "ADB shell turn off command (leave empty for default)",
           "turn_on_command": "ADB shell turn on command (leave empty for default)",
           "relaunch_helper": "Relaunch the helper app when the device is unreachable",
-          "relaunch_entity": "Android TV Remote entity to launch it with"
+          "relaunch_entity": "Android TV Remote entity to launch it with",
+          "keep_pairing": "Keep the pairing (disable the ADB authorization timeout)"
         },
         "data_description": {
           "relaunch_helper": "If the TV is on but wireless debugging is off for 3 minutes, launch the helper through the Android TV Remote integration (which doesn't need ADB). Retried every 5 minutes.",
-          "relaunch_entity": "Leave empty to use the Android TV Remote entity set up for the same address."
+          "relaunch_entity": "Leave empty to use the Android TV Remote entity set up for the same address.",
+          "keep_pairing": "Android forgets paired devices that haven't connected for 7 days. When on, Home Assistant sets Developer options > Disable ADB authorization timeout on the device. Turning this off here doesn't change the device back."
         }
       },
       "rules": {

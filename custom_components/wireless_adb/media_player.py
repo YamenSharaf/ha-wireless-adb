@@ -20,7 +20,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util.dt import utcnow
 
-from . import WirelessAdbConfigEntry
+from . import WirelessAdbConfigEntry, async_apply_device_settings
 from .const import (
     CONF_APPS,
     CONF_EXCLUDE_UNNAMED_APPS,
@@ -248,7 +248,7 @@ class ADBDevice(WirelessAdbEntity, MediaPlayerEntity):
         """Send an ADB command to an Android / Fire TV device."""
         if key := KEYS.get(command):
             await self.aftv.adb_shell(f"input keyevent {key}")
-            return None
+            return {ATTR_ADB_RESPONSE: ""}
 
         if command == "GET_PROPERTIES":
             adb_response = str(await self.aftv.get_properties_dict())
@@ -261,13 +261,14 @@ class ADBDevice(WirelessAdbEntity, MediaPlayerEntity):
         except UnicodeDecodeError:
             return None
 
-        if isinstance(response, str) and response.strip():
-            adb_response = response.strip()
+        # Always answer when a response is requested (an empty string when
+        # the command printed nothing); the attribute keeps core's behaviour
+        # of only changing on non-empty output.
+        adb_response = response.strip() if isinstance(response, str) else ""
+        if adb_response:
             self._attr_extra_state_attributes[ATTR_ADB_RESPONSE] = adb_response
             self.async_write_ha_state()
-            return {ATTR_ADB_RESPONSE: adb_response}
-
-        return None
+        return {ATTR_ADB_RESPONSE: adb_response}
 
     @adb_decorator()
     async def learn_sendevent(self) -> None:
@@ -340,6 +341,7 @@ class AndroidTVDevice(ADBDevice):
                     # commands by Android version, so load the properties now.
                     await self.aftv.get_device_properties()
                 health.async_connected()
+                await async_apply_device_settings(self._entry)
             else:
                 self._failed_connect_count += 1
                 health.async_disconnected()

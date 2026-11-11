@@ -11,7 +11,7 @@ an external ADB server, a helper to flip the TV back to classic mode, and
 automations to glue it together. This integration talks to wireless debugging
 directly, so none of that is needed on the Home Assistant side.
 
-> **Status: early development (0.2.0).** It runs on one Sony Bravia 7. Expect
+> **Status: early development (0.3.0).** It runs on one Sony Bravia 7. Expect
 > rough edges, and expect breaking changes before 1.0.
 
 ## How it works
@@ -37,7 +37,9 @@ directly, so none of that is needed on the Home Assistant side.
   integration, which doesn't need ADB.
 - **Lost pairing.** Some firmwares occasionally forget paired keys. When the TV
   keeps refusing Home Assistant's key, the integration asks you to pair again
-  (*Settings > Devices & services* shows a re-authentication card).
+  (*Settings > Devices & services* shows a re-authentication card). By default
+  the integration also turns on *Disable ADB authorization timeout* on the TV,
+  so Android doesn't drop the pairing after 7 days without a connection.
 
 ## What you get
 
@@ -56,8 +58,29 @@ Plus, specific to wireless debugging:
   (a problem sensor that turns on when the TV stops accepting the key), for
   your own automations
 - `update` *Helper app*: the installed vs bundled helper version, with Install
+- `wireless_adb.adb_command` returns the command's output as a response, so a
+  script can use it directly (see below)
 - Options: relaunch the helper through Android TV Remote (on by default; the
-  Android TV Remote entry for the same address is found automatically)
+  Android TV Remote entry for the same address is found automatically), and
+  keep the pairing by disabling the ADB authorization timeout (on by default)
+
+### Using command output in scripts
+
+```yaml
+- action: wireless_adb.adb_command
+  target:
+    entity_id: media_player.living_room_tv
+  data:
+    command: getprop ro.product.model
+  response_variable: result
+- action: notify.notify
+  data:
+    message: "{{ result['media_player.living_room_tv'].adb_response }}"
+```
+
+The response is keyed by entity and always has `adb_response` (an empty string
+when the command printed nothing). Without `response_variable` the output also
+lands in the entity's `adb_response` attribute, as in the core integration.
 
 ## Requirements
 
@@ -104,6 +127,9 @@ tagged `app-v…`.
    it permission to change the wireless-debugging setting, and launches it once.
 
 If this Home Assistant is already paired with the TV, leave the code empty.
+The TV lists the pairing as `HomeAssistant@WirelessADB` under *Paired devices*
+(pairings made before 0.3.0 show as `unknown@homeassistant` until the next
+pairing).
 Removing the last Wireless ADB device also deletes the integration's key, so a
 later re-add needs a new pairing code.
 

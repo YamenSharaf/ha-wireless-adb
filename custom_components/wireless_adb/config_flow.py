@@ -9,6 +9,7 @@ config entry.
 import asyncio
 from collections.abc import Mapping
 import logging
+import re
 from typing import Any, override
 
 from androidtv_wifi import state_detection_rules_validator
@@ -33,6 +34,8 @@ from homeassistant.helpers.selector import (
     SelectSelectorConfig,
     SelectSelectorMode,
     TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
 )
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
@@ -43,6 +46,7 @@ from .const import (
     CONF_EXCLUDE_UNNAMED_APPS,
     CONF_GET_SOURCES,
     CONF_INSTALL_HELPER,
+    CONF_KEEP_PAIRING,
     CONF_PAIRING_CODE,
     CONF_PAIRING_PORT,
     CONF_RELAUNCH_ENTITY,
@@ -53,6 +57,7 @@ from .const import (
     CONF_TURN_ON_COMMAND,
     DEFAULT_EXCLUDE_UNNAMED_APPS,
     DEFAULT_GET_SOURCES,
+    DEFAULT_KEEP_PAIRING,
     DEFAULT_RELAUNCH_HELPER,
     DEFAULT_SCREENCAP_INTERVAL,
     DOMAIN,
@@ -77,16 +82,23 @@ RESULT_UNKNOWN = "unknown"
 CONNECT_ATTEMPTS = 3
 CONNECT_RETRY_DELAY_S = 2
 
+# The pairing code is six digits, but stays a string: it can start with 0.
+# TEL brings up the numeric keypad on phones.
+_PAIRING_CODE_SELECTOR = TextSelector(
+    TextSelectorConfig(type=TextSelectorType.TEL, autocomplete="off")
+)
+_PAIRING_CODE = re.compile(r"\d{6}")
+
 _PAIR_SCHEMA_OPTIONAL = probatio.Schema(
     {
         probatio.Optional(CONF_PAIRING_PORT): probatio.Port(),
-        probatio.Optional(CONF_PAIRING_CODE): TextSelector(),
+        probatio.Optional(CONF_PAIRING_CODE): _PAIRING_CODE_SELECTOR,
     }
 )
 _PAIR_SCHEMA_REQUIRED = probatio.Schema(
     {
         probatio.Required(CONF_PAIRING_PORT): probatio.Port(),
-        probatio.Required(CONF_PAIRING_CODE): TextSelector(),
+        probatio.Required(CONF_PAIRING_CODE): _PAIRING_CODE_SELECTOR,
     }
 )
 
@@ -249,13 +261,16 @@ class WirelessAdbFlowHandler(ConfigFlow, domain=DOMAIN):
     ) -> dict[str, str]:
         """Pair if a code was given; return form errors."""
         assert self._host is not None
-        code = (user_input.get(CONF_PAIRING_CODE) or "").strip()
+        # Tolerate "123 456" and stray spaces from copy-paste.
+        code = "".join((user_input.get(CONF_PAIRING_CODE) or "").split())
         pairing_port = user_input.get(CONF_PAIRING_PORT)
 
         # During setup pairing is optional: leave the code empty if this Home
         # Assistant is already paired. Re-authentication always needs it.
         if not code:
             return {CONF_PAIRING_CODE: "pairing_code_required"} if code_required else {}
+        if not _PAIRING_CODE.fullmatch(code):
+            return {CONF_PAIRING_CODE: "invalid_pairing_code"}
         if not pairing_port:
             return {CONF_PAIRING_PORT: "pairing_port_required"}
         try:
@@ -492,6 +507,10 @@ class OptionsFlowHandler(OptionsFlow):
                     CONF_RELAUNCH_ENTITY,
                     description={"suggested_value": options.get(CONF_RELAUNCH_ENTITY)},
                 ): EntitySelector(EntitySelectorConfig(domain="remote")),
+                probatio.Optional(
+                    CONF_KEEP_PAIRING,
+                    default=options.get(CONF_KEEP_PAIRING, DEFAULT_KEEP_PAIRING),
+                ): bool,
             }
         )
 

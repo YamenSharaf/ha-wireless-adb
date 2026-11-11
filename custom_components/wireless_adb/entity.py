@@ -60,10 +60,12 @@ def adb_decorator[_ADBDeviceT: WirelessAdbEntity, **_P, _R](
                 return None
             except self.exceptions as err:
                 if self.available:
-                    _LOGGER.error(
+                    # A warning, not an error: this is what a TV going into
+                    # standby or restarting looks like, and it reconnects.
+                    _LOGGER.warning(
                         (
-                            "Failed to execute an ADB command. ADB connection re-"
-                            "establishing attempt in the next update. Error: %s"
+                            "Lost the ADB connection (%s); reconnecting in the"
+                            " next update"
                         ),
                         err,
                     )
