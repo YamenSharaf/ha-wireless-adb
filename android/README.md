@@ -27,8 +27,9 @@ over mDNS, and Home Assistant picks it up.
 
 ## Install
 
-> The Wireless ADB integration will soon install and update the helper for you.
-> Until then, install it by hand once:
+The Wireless ADB integration installs it for you (a step right after pairing)
+and keeps it updated through its *Helper app* update entity. To install it by
+hand instead:
 
 1. Download the latest `app-release.apk` from this repository's releases (tags
    `app-v…`).

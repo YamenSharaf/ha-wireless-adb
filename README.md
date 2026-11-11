@@ -11,7 +11,7 @@ an external ADB server, a helper to flip the TV back to classic mode, and
 automations to glue it together. This integration talks to wireless debugging
 directly, so none of that is needed on the Home Assistant side.
 
-> **Status: early development (0.1.0).** It runs on one Sony Bravia 7. Expect
+> **Status: early development (0.2.0).** It runs on one Sony Bravia 7. Expect
 > rough edges, and expect breaking changes before 1.0.
 
 ## How it works
@@ -29,6 +29,15 @@ directly, so none of that is needed on the Home Assistant side.
   integration reloads; if a connect fails, the integration also looks the TV up
   itself. Matching is always by serial, never "first service found", because
   phones on the same network advertise the same service.
+- **Keeping wireless debugging on.** Android turns it off at every restart. The
+  [Wireless ADB Helper](android/) app, which the integration installs for you,
+  turns it back on at boot and every 15 minutes. If the TV is on but still
+  unreachable, the integration launches the helper through the
+  [Android TV Remote](https://www.home-assistant.io/integrations/androidtv_remote/)
+  integration, which doesn't need ADB.
+- **Lost pairing.** Some firmwares occasionally forget paired keys. When the TV
+  keeps refusing Home Assistant's key, the integration asks you to pair again
+  (*Settings > Devices & services* shows a re-authentication card).
 
 ## What you get
 
@@ -41,18 +50,25 @@ Home Assistant 2026.11.0:
 - Options for app names, state detection rules, screencap interval and
   turn on/off commands
 
-The integration's entities attach to the same device as the TV's other
-integrations (Android TV Remote, Bravia), matched by MAC address.
+Plus, specific to wireless debugging:
+
+- `binary_sensor` *ADB connection* (on while a session is up) and *Pairing*
+  (a problem sensor that turns on when the TV stops accepting the key), for
+  your own automations
+- `update` *Helper app*: the installed vs bundled helper version, with Install
+- Options: relaunch the helper through Android TV Remote (on by default; the
+  Android TV Remote entry for the same address is found automatically)
 
 ## Requirements
 
 - Home Assistant 2026.11 or newer
 - An Android TV / Google TV device on Android 11+ with *Developer options >
   Wireless debugging* turned on
-- **Wireless debugging must be on after every reboot.** Android turns it off
-  when the device restarts. The [Wireless ADB Helper](android/) app turns it back
-  on at boot; install it once (see its README). The integration will soon
-  install and update it for you.
+- Recommended: the [Android TV Remote](https://www.home-assistant.io/integrations/androidtv_remote/)
+  integration for the same TV, so the integration can relaunch the helper when
+  ADB is down
+- Home Assistant and the TV on the same network segment (or an mDNS reflector
+  between them): the TV's port is found over mDNS
 
 ## Installation
 
@@ -84,8 +100,12 @@ tagged `app-v…`.
    **port** (after the colon) and the **code** it shows, and submit while the
    dialog is still open.
 
-If this Home Assistant is already paired with the TV (for example after you
-deleted and re-added the entry), leave the code empty.
+4. Keep **Install the helper app** ticked. Home Assistant installs it, grants
+   it permission to change the wireless-debugging setting, and launches it once.
+
+If this Home Assistant is already paired with the TV, leave the code empty.
+Removing the last Wireless ADB device also deletes the integration's key, so a
+later re-add needs a new pairing code.
 
 ## Differences from the core integration
 
@@ -102,9 +122,8 @@ deleted and re-added the entry), leave the code empty.
 
 - Screen capture still runs `screencap -p` on the TV, which takes a couple of
   seconds of TV CPU per capture.
-- Losing the pairing (rare, but it happens on some firmwares) currently shows
-  up as the device being unavailable. A repair flow that asks for a new code is
-  planned.
+- The helper's watchdog turns wireless debugging back on within 15 minutes if
+  you switch it off on the TV. To turn it off for good, uninstall the helper.
 
 ## Credits and license
 
@@ -112,8 +131,8 @@ Forked from Home Assistant's `androidtv` integration (Apache License 2.0,
 Copyright Home Assistant contributors). The first commit in this repository is
 the unmodified upstream code, so every change is visible as a diff. Built on
 [`androidtv-wifi`](https://pypi.org/project/androidtv-wifi/) and
-[`adb-shell-wifi`](https://pypi.org/project/adb-shell-wifi/) by Jason Novak,
-which are forks of Jeff Irion's `python-androidtv` and `adb_shell`.
+[`adb-shell-wifi`](https://pypi.org/project/adb-shell-wifi/), forks of Jeff
+Irion's `python-androidtv` and `adb_shell` that add wireless debugging.
 
 The TV helper app in [`android/`](android/) is based on
 [stevene1919/localwifidebug](https://github.com/stevene1919/localwifidebug) and
@@ -124,7 +143,7 @@ The integration is licensed under the Apache License 2.0; see [LICENSE](LICENSE)
 ## Repository layout
 
 - `custom_components/wireless_adb/`: the Home Assistant integration
-- `android/`: the TV helper app that turns wireless debugging back on at boot
-  (Kotlin, MIT; built by `.github/workflows/android.yml` and published as
-  `app-v…` prereleases)
+- `android/`: the TV helper app that keeps wireless debugging on (Kotlin, MIT;
+  built by `.github/workflows/android.yml` and published as `app-v…`
+  prereleases; each integration release bundles the newest one)
 - `assets/`: source artwork

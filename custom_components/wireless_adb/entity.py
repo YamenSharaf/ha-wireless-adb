@@ -122,8 +122,8 @@ class WirelessAdbEntity(Entity):
         if sw_version := info.get("sw_version"):
             self._attr_device_info.sw_version = sw_version
         if mac := get_androidtv_mac(info):
-            # Same MAC as the androidtv / androidtv_remote / braviatv devices,
-            # so Home Assistant shows all of them on one device.
+            # Lets Home Assistant relate it to other integrations' devices
+            # with the same MAC (e.g. core androidtv).
             self._attr_device_info.connections = {(CONNECTION_NETWORK_MAC, mac)}
 
         # ADB exceptions to catch

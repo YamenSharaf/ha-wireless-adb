@@ -30,7 +30,7 @@ from homeassistant.const import (
     STATE_ON,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .connection import ProbeResult, async_probe
@@ -38,7 +38,6 @@ from .const import (
     CONF_RELAUNCH_ENTITY,
     CONF_RELAUNCH_HELPER,
     DEFAULT_RELAUNCH_HELPER,
-    DOMAIN,
     HELPER_LAUNCH_URI,
     SIGNAL_HEALTH,
 )
@@ -203,22 +202,20 @@ class ConnectionHealth:
 
 @callback
 def find_androidtv_remote(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
-    """Find an Android TV Remote `remote` entity on the same device as ours.
+    """Find the Android TV Remote `remote` entity for the same TV.
 
-    Our entities join the TV's existing device through its MAC address, the
-    same way Android TV Remote's do, so they share a device.
+    Matched by host: Android TV Remote's config entry stores the TV's address.
+    (Device-registry matching doesn't work: each integration registers its own
+    device, and Android TV Remote reports a different MAC than ADB.)
     """
-    if entry.unique_id is None:
-        return None
-    device = dr.async_get(hass).async_get_device(
-        identifiers={(DOMAIN, entry.unique_id)}
-    )
-    if device is None:
-        return None
-    for entity in er.async_entries_for_device(er.async_get(hass), device.id):
-        if (
-            entity.domain == REMOTE_DOMAIN
-            and entity.platform == ANDROIDTV_REMOTE_PLATFORM
+    host = entry.data.get(CONF_HOST)
+    entity_registry = er.async_get(hass)
+    for remote_entry in hass.config_entries.async_entries(ANDROIDTV_REMOTE_PLATFORM):
+        if remote_entry.data.get(CONF_HOST) != host:
+            continue
+        for entity in er.async_entries_for_config_entry(
+            entity_registry, remote_entry.entry_id
         ):
-            return entity.entity_id
+            if entity.domain == REMOTE_DOMAIN:
+                return entity.entity_id
     return None

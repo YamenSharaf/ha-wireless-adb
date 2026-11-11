@@ -111,7 +111,7 @@
         },
         "data_description": {
           "relaunch_helper": "If the TV is on but wireless debugging is off for 3 minutes, launch the helper through the Android TV Remote integration (which doesn't need ADB). Retried every 5 minutes.",
-          "relaunch_entity": "Leave empty to use the Android TV Remote entity on the same device."
+          "relaunch_entity": "Leave empty to use the Android TV Remote entity set up for the same address."
         }
       },
       "rules": {
