@@ -10,19 +10,6 @@ on:
       - '!android/flowchart.*'
       - '.github/workflows/android.yml'
   workflow_dispatch:
-    inputs:
-      webhook_id:
-        description: "HA webhook ID (the part after /api/webhook/)"
-        required: true
-        default: "<webhook-id>"
-      ha_url:
-        description: "Home Assistant base URL"
-        required: true
-        default: "http://<ha-host>:8123"
-      device_id:
-        description: "Identifier sent to HA (free text)"
-        required: true
-        default: "<device-id>"
 
 # Needed so the workflow can create a GitHub Release
 permissions:
@@ -41,11 +28,6 @@ jobs:
     defaults:
       run:
         working-directory: android
-    # Push events have no inputs, so fall back to the same defaults as workflow_dispatch
-    env:
-      WEBHOOK_ID: ${{ github.event.inputs.webhook_id || '<webhook-id>' }}
-      HA_URL: ${{ github.event.inputs.ha_url || 'http://<ha-host>:8123' }}
-      DEVICE_ID: ${{ github.event.inputs.device_id || '<device-id>' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -78,14 +60,10 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           cat > local.properties <<PROPS
-          WEBHOOK_URL=${HA_URL}/api/webhook/${WEBHOOK_ID}
-          DEVICE_ID=${DEVICE_ID}
           RELEASE_STORE_PASSWORD=${KEYSTORE_PASSWORD}
           RELEASE_KEY_PASSWORD=${KEYSTORE_PASSWORD}
           RELEASE_KEY_ALIAS=wirelessadb
           PROPS
-          echo "--- webhook (shown for verification) ---"
-          grep WEBHOOK_URL local.properties
 
       - name: Build release APK
         run: |
@@ -116,4 +94,4 @@ jobs:
             --prerelease \
             --title "Helper app ${{ steps.ver.outputs.name }} (versionCode ${{ steps.ver.outputs.code }})" \
             --target "${{ github.sha }}" \
-            --notes "Automated build from ${GITHUB_SHA:0:7} (versionName ${{ steps.ver.outputs.name }}, versionCode ${{ steps.ver.outputs.code }}, device: ${DEVICE_ID}, webhook: ${WEBHOOK_ID})"
+            --notes "Automated build from ${GITHUB_SHA:0:7} (versionName ${{ steps.ver.outputs.name }}, versionCode ${{ steps.ver.outputs.code }})"

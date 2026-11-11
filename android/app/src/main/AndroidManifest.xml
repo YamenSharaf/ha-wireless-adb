@@ -67,7 +67,20 @@
             </intent-filter>
         </activity>
 
-        <!-- Fires the headless port sync on boot (phase a). -->
+        <!-- Optional webhook setting, changed over ADB with `am broadcast`
+             (see WebhookConfig.kt). Exported, but only senders holding
+             WRITE_SECURE_SETTINGS (the ADB shell, the system) may send it. -->
+        <receiver
+            android:name=".ConfigReceiver"
+            android:exported="true"
+            android:permission="android.permission.WRITE_SECURE_SETTINGS"
+            tools:ignore="ProtectedPermissions">
+            <intent-filter>
+                <action android:name="dev.yamen.wirelessadb.CONFIGURE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Fires the headless sync on boot (phase a). -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"

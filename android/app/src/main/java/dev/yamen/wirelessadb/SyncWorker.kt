@@ -38,11 +38,12 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
- * Headless equivalent of the old Activity auto-run: enable Wireless Debugging,
- * discover the assigned mDNS port, and POST it once to the HA webhook. Shared by
- * both triggers — BootReceiver (on boot) and MainActivity (manual/recovery).
+ * Headless sync: enable Wireless Debugging and, only if a webhook is configured
+ * (WebhookConfig, off by default), discover the assigned mDNS port and POST it
+ * once. Shared by both triggers — BootReceiver (on boot) and MainActivity
+ * (manual/recovery).
  *
- * Retry boundary (agreed with the HA/add-on side):
+ * Retry boundary when a webhook is configured (agreed with the HA/add-on side):
  *  - The worker's ONLY success signal is the webhook's HTTP 2xx. It has zero
  *    visibility into whether the add-on subsequently connects over ADB, so it
  *    cannot and does not retry on downstream recovery. "Done" = the port was
@@ -93,6 +94,15 @@ class SyncWorker(
             return Result.failure()
         }
 
+        // Turning wireless debugging on is the whole job unless a webhook is
+        // configured (off by default; see WebhookConfig): Home Assistant's
+        // Wireless ADB integration finds the port over mDNS by itself.
+        val webhook = WebhookConfig.load(applicationContext)
+        if (!webhook.enabled) {
+            Log.d(TAG, "Wireless debugging on; no webhook configured, nothing to report")
+            return Result.success()
+        }
+
         val port = discoverPort(DISCOVERY_TIMEOUT_MS)
         if (port == null) {
             Log.w(TAG, "No $SERVICE_TYPE port discovered (attempt $runAttemptCount)")
@@ -104,7 +114,7 @@ class SyncWorker(
             }
         }
 
-        return if (postToHa(port)) {
+        return if (postToHa(port, webhook)) {
             Log.d(TAG, "posted port=$port (latency ${latencyMs}ms)")
             showNotification("WiFi Debug Sync", "Port $port sent.")
             Result.success()
@@ -276,15 +286,15 @@ class SyncWorker(
             listOfNotNull(@Suppress("DEPRECATION") info.host)
         }
 
-    private suspend fun postToHa(port: Int): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun postToHa(port: Int, webhook: WebhookConfig): Boolean = withContext(Dispatchers.IO) {
         try {
             val body = JSONObject().apply {
                 put("port", port)
-                put("device_id", BuildConfig.DEVICE_ID)
+                put("device_id", webhook.deviceId)
             }.toString().toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
-                .url(BuildConfig.WEBHOOK_URL)
+                .url(webhook.url!!)
                 .post(body)
                 .build()
 

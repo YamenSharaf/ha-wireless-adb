@@ -22,10 +22,8 @@ android {
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        def webhookUrl = localProperties.getProperty('WEBHOOK_URL', "http://192.168.50.200:8123/api/webhook/ccwgt_port")
-        buildConfigField "String", "WEBHOOK_URL", "\"${webhookUrl}\""
-        def deviceId = localProperties.getProperty('DEVICE_ID', "ccwgt")
-        buildConfigField "String", "DEVICE_ID", "\"${deviceId}\""
+        // No build-time webhook: it's an optional runtime setting, set over
+        // ADB (see WebhookConfig.kt), so one APK works for every device.
     }
 
     signingConfigs {
